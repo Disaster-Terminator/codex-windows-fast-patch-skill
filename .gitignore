@@ -1,0 +1,6 @@
+*.log
+*.tmp
+*.bak
+codex-msix-repack/
+work-*/
+artifacts/
