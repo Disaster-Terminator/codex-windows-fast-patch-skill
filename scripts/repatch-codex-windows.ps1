@@ -110,6 +110,58 @@ function Set-TomlTable {
   Write-Utf8NoBom $ConfigPath $content
 }
 
+function Set-TomlTableValue {
+  param(
+    [string]$ConfigPath,
+    [string]$Header,
+    [string]$Key,
+    [object]$Value
+  )
+
+  $content = ''
+  if (Test-Path -LiteralPath $ConfigPath) {
+    $content = [System.IO.File]::ReadAllText($ConfigPath, [System.Text.UTF8Encoding]::new($false))
+  }
+
+  if ($Value -is [bool]) {
+    $valueText = $Value.ToString().ToLowerInvariant()
+  } else {
+    $escaped = [string]$Value -replace "'", "''"
+    $valueText = "'$escaped'"
+  }
+  $line = "$Key = $valueText"
+  $escapedHeader = [regex]::Escape($Header)
+  $escapedKey = [regex]::Escape($Key)
+  $tablePattern = "(?ms)^$escapedHeader\s*\r?\n(?<body>(?:(?!^\[).)*)"
+
+  if ([regex]::IsMatch($content, $tablePattern)) {
+    $content = [regex]::Replace($content, $tablePattern, {
+      param($match)
+      $body = $match.Groups['body'].Value
+      $keyPattern = "(?m)^\s*$escapedKey\s*=.*$"
+      if ([regex]::IsMatch($body, $keyPattern)) {
+        $body = [regex]::Replace($body, $keyPattern, $line, 1)
+      } else {
+        if ($body.Length -gt 0 -and -not $body.EndsWith("`n")) {
+          $body += "`r`n"
+        }
+        $body += "$line`r`n"
+      }
+      return "$Header`r`n$body"
+    }, 1)
+  } else {
+    if ($content.Length -gt 0 -and -not $content.EndsWith("`n")) {
+      $content += "`r`n"
+    }
+    if ($content.Length -gt 0 -and -not $content.EndsWith("`r`n`r`n")) {
+      $content += "`r`n"
+    }
+    $content += "$Header`r`n$line`r`n"
+  }
+
+  Write-Utf8NoBom $ConfigPath $content
+}
+
 function Test-TomlSyntax {
   param([string]$ConfigPath)
 
@@ -185,6 +237,17 @@ function Invoke-ComputerUseInstaller {
   Write-Log "Computer Use ${mode}: $Stage"
   Invoke-Checked 'powershell' $args "Computer Use $mode failed"
   $env:CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE = '1'
+  Enable-ComputerUseFeature
+}
+
+function Enable-ComputerUseFeature {
+  $configPath = Join-Path $env:USERPROFILE '.codex\config.toml'
+  if ((Test-Path -LiteralPath $configPath) -and -not (Test-Path -LiteralPath "$configPath.computer-use-feature.bak")) {
+    Copy-Item -LiteralPath $configPath -Destination "$configPath.computer-use-feature.bak" -Force
+  }
+  Set-TomlTableValue $configPath '[features]' 'computer_use' $true
+  Test-TomlSyntax $configPath
+  Write-Log 'local feature enabled: features.computer_use = true'
 }
 
 function Register-LocalMarketplace {

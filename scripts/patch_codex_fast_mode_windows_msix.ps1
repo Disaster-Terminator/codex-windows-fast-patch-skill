@@ -344,6 +344,7 @@ function Write-PatcherFiles {
   $fastPatcherPath = Join-Path $WorkDir 'PatchFastMode.cjs'
   $pluginsPatcherPath = Join-Path $WorkDir 'PatchPlugins.cjs'
   $goalPatcherPath = Join-Path $WorkDir 'PatchGoal.cjs'
+  $computerUsePatcherPath = Join-Path $WorkDir 'PatchComputerUseGates.cjs'
 
   Set-Content -LiteralPath $fastPatcherPath -Encoding UTF8 -Value @'
 const fs = require('node:fs');
@@ -505,10 +506,89 @@ if (changedSlash) fs.writeFileSync(slashFile, nextSlash);
 process.stdout.write('patched');
 '@
 
+  Set-Content -LiteralPath $computerUsePatcherPath -Encoding UTF8 -Value @'
+const fs = require('node:fs');
+const [availabilityFile, installFlowFile, mobileSetupFile] = process.argv.slice(2);
+let changed = false;
+
+function read(file) {
+  return fs.readFileSync(file, 'utf8');
+}
+
+function writeIfChanged(file, before, after) {
+  if (after !== before) {
+    fs.writeFileSync(file, after);
+    changed = true;
+  }
+}
+
+function patchComputerUseAvailability(file) {
+  const before = read(file);
+  if (!before.includes('featureName:`computer_use`')) {
+    process.stderr.write('computer-use-availability-target-not-found\n');
+    process.exit(2);
+  }
+
+  let after = before;
+  after = after.replace(/=[A-Za-z_$][\w$]*\(`1506311413`\)/, '=!0');
+  after = after.replace(
+    /(featureName:`computer_use`[^;]+;let )([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*\),/,
+    '$1$2={enabled:!0,isLoading:!1},'
+  );
+
+  if (after === before && !/featureName:`computer_use`[^;]+;let [A-Za-z_$][\w$]*=\{enabled:!0,isLoading:!1\},/.test(before)) {
+    process.stderr.write('computer-use-availability-patch-target-not-found\n');
+    process.exit(2);
+  }
+  writeIfChanged(file, before, after);
+}
+
+function patchComputerUseInstallFlow(file) {
+  const before = read(file);
+  if (!before.includes('featureName:`computer_use`') || !before.includes('openPluginInstall')) {
+    process.stderr.write('computer-use-install-flow-target-not-found\n');
+    process.exit(2);
+  }
+
+  let after = before.replace(
+    /([A-Za-z_$][\w$]*)=![A-Za-z_$][\w$]*\.isLoading&&[A-Za-z_$][\w$]*\.enabled,(?=[A-Za-z_$][\w$]*=[A-Za-z_$][\w$]*\.available,[A-Za-z_$][\w$]*=[A-Za-z_$][\w$]*\.available,)/,
+    '$1=!0,'
+  );
+
+  if (after === before && !/featureName:`computer_use`[\s\S]*?=!0,[A-Za-z_$][\w$]*=[A-Za-z_$][\w$]*\.available,[A-Za-z_$][\w$]*=[A-Za-z_$][\w$]*\.available,/.test(before)) {
+    process.stderr.write('computer-use-install-flow-patch-target-not-found\n');
+    process.exit(2);
+  }
+  writeIfChanged(file, before, after);
+}
+
+function patchMobileSetup(file) {
+  const before = read(file);
+  if (!before.includes('showComputerUseSetup')) {
+    process.stderr.write('computer-use-mobile-setup-target-not-found\n');
+    process.exit(2);
+  }
+
+  const after = before.replace(/=[A-Za-z_$][\w$]*\(`1506311413`\)/, '=!0');
+  if (after === before && before.includes('1506311413')) {
+    process.stderr.write('computer-use-mobile-setup-patch-target-not-found\n');
+    process.exit(2);
+  }
+  writeIfChanged(file, before, after);
+}
+
+patchComputerUseAvailability(availabilityFile);
+patchComputerUseInstallFlow(installFlowFile);
+patchMobileSetup(mobileSetupFile);
+
+process.stdout.write(changed ? 'patched' : 'already-patched');
+'@
+
   return [pscustomobject]@{
     Fast = $fastPatcherPath
     Plugins = $pluginsPatcherPath
     Goal = $goalPatcherPath
+    ComputerUse = $computerUsePatcherPath
   }
 }
 
@@ -566,12 +646,49 @@ function Find-PatchTargets {
     Fail 'could not find goal slash-command matcher in extracted assets'
   }
 
+  $computerUseAvailabilityTarget = $null
+  $computerUseInstallFlowTarget = $null
+  foreach ($candidate in (Invoke-RgList $RgPath 'featureName:`computer_use`' $assetsDir)) {
+    $text = Get-Content -Raw -LiteralPath $candidate
+    if ([string]::IsNullOrWhiteSpace($computerUseAvailabilityTarget) -and
+        $text.Contains('available:') -and
+        $text.Contains('isFetching:')) {
+      $computerUseAvailabilityTarget = $candidate
+    }
+    if ([string]::IsNullOrWhiteSpace($computerUseInstallFlowTarget) -and
+        $text.Contains('openPluginInstall') -and
+        $text.Contains('installPlugin:async')) {
+      $computerUseInstallFlowTarget = $candidate
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($computerUseAvailabilityTarget)) {
+    Fail 'could not find Computer Use availability gate in extracted assets'
+  }
+  if ([string]::IsNullOrWhiteSpace($computerUseInstallFlowTarget)) {
+    Fail 'could not find Computer Use install-flow gate in extracted assets'
+  }
+
+  $computerUseMobileSetupTarget = $null
+  foreach ($candidate in (Invoke-RgList $RgPath 'showComputerUseSetup' $assetsDir)) {
+    $text = Get-Content -Raw -LiteralPath $candidate
+    if ($text.Contains('showComputerUseSetup')) {
+      $computerUseMobileSetupTarget = $candidate
+      break
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($computerUseMobileSetupTarget)) {
+    Fail 'could not find Computer Use mobile setup gate in extracted assets'
+  }
+
   Write-Log "fast-mode patch target: $fastModeTarget"
   Write-Log "plugin sidebar patch target: $pluginSidebarTarget"
   Write-Log "plugin skills-page patch target: $pluginSkillsTarget"
   Write-Log "plugin detail patch target: $pluginDetailTarget"
   Write-Log "goal composer patch target: $goalComposerTarget"
   Write-Log "goal slash-command patch target: $goalSlashTarget"
+  Write-Log "computer-use availability patch target: $computerUseAvailabilityTarget"
+  Write-Log "computer-use install-flow patch target: $computerUseInstallFlowTarget"
+  Write-Log "computer-use mobile setup patch target: $computerUseMobileSetupTarget"
 
   return [pscustomobject]@{
     FastMode = $fastModeTarget
@@ -580,6 +697,9 @@ function Find-PatchTargets {
     PluginDetail = $pluginDetailTarget
     GoalComposer = $goalComposerTarget
     GoalSlash = $goalSlashTarget
+    ComputerUseAvailability = $computerUseAvailabilityTarget
+    ComputerUseInstallFlow = $computerUseInstallFlowTarget
+    ComputerUseMobileSetup = $computerUseMobileSetupTarget
   }
 }
 
@@ -628,13 +748,15 @@ function Invoke-PatchAppAsar {
   Write-Log "plugin patch result: $plugins"
   $goal = Invoke-NodePatcher $nodePath $patchers.Goal @($targets.GoalComposer, $targets.GoalSlash)
   Write-Log "goal patch result: $goal"
+  $computerUse = Invoke-NodePatcher $nodePath $patchers.ComputerUse @($targets.ComputerUseAvailability, $targets.ComputerUseInstallFlow, $targets.ComputerUseMobileSetup)
+  Write-Log "computer-use gate patch result: $computerUse"
 
   if ($DryRun) {
     Write-Log 'dry run: patch targets matched; no package was changed'
     return $false
   }
 
-  if ($fast -eq 'already-patched' -and $plugins -eq 'already-patched' -and $goal -eq 'already-patched') {
+  if ($fast -eq 'already-patched' -and $plugins -eq 'already-patched' -and $goal -eq 'already-patched' -and $computerUse -eq 'already-patched') {
     Write-Log 'asar patch already present'
     return $false
   }
