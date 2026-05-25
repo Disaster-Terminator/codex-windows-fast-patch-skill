@@ -7,6 +7,12 @@ description: Reapply the Windows Codex Desktop MSIX patch after Store upgrades, 
 
 Use this skill when the user says Codex Desktop was upgraded and the Fast Mode / Plugins / Goal patch disappeared, asks to repatch Codex on Windows, asks to verify whether Fast Mode is really being sent, asks to restore/register the local plugin marketplace, or asks to enable Windows Computer Use in Codex Desktop. Also use it when the Computer Control settings page shows "Any App" / "任意应用" as disabled by organization or unavailable in the current region.
 
+## Platform Compatibility
+
+This skill is Windows-only. It depends on the Windows Store/MSIX package layout, PowerShell, `Get-AppxPackage`, `makeappx.exe`, `signtool.exe`, Windows user environment variables, and Windows Computer Use helper paths.
+
+Do not run this skill on macOS. A macOS adaptation needs a separate workflow for the Codex `.app` bundle, ASAR extraction and repacking, macOS code signing or quarantine handling, shell scripts, and macOS-specific Computer Use availability.
+
 ## Default Workflow
 
 1. Inspect current package status:

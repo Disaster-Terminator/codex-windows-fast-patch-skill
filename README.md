@@ -11,6 +11,12 @@ This skill documents and automates a Windows Codex Desktop repatch workflow, inc
 - Refreshing Windows Computer Use compatibility files.
 - Unlocking the Windows Computer Control "Any App" gate when the UI reports organization or region unavailability, by patching the local Desktop webview gates and enabling `features.computer_use`.
 
+## Platform Compatibility
+
+This skill is Windows-only. It depends on the Windows Store/MSIX package layout, PowerShell, `Get-AppxPackage`, `makeappx.exe`, `signtool.exe`, Windows user environment variables, and Windows Computer Use helper paths.
+
+It should not be run on macOS. A macOS version would need a separate workflow for the Codex `.app` bundle, ASAR extraction and repacking, macOS code signing or quarantine handling, shell scripts, and macOS-specific Computer Use availability.
+
 ## Included Files
 
 - `SKILL.md`
