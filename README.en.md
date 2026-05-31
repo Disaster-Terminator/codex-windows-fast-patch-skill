@@ -53,6 +53,8 @@ After installing into Codex, restart Codex so it reloads skill metadata.
 
 After installation, ask an agent that supports Agent Skills to use the `codex-windows-fast-patch` workflow for the Codex Desktop issue on the current machine.
 
+The skill instructs the agent to try checking GitHub and syncing the latest version before doing substantive work. If the network is unavailable, GitHub cannot be reached, or the download fails, that update step is skipped and the agent should continue with the currently installed local version.
+
 The scripts are reference implementations and operational templates, not a one-command fix that is guaranteed to work on every machine. A real run should first read `SKILL.md`, inspect the current Codex installation method, MSIX package path, ASAR contents, signing tools, plugin directories, and Computer Use file state, then decide whether to execute, adapt, or only borrow steps from the scripts.
 
 Example request: `Use the codex-windows-fast-patch skill to inspect and repair Codex Desktop Fast Mode, plugin marketplace, and Computer Use availability on this Windows machine.`

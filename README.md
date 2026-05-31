@@ -53,6 +53,8 @@ Copy-Item -Recurse -Force -LiteralPath (Join-Path $source 'scripts') -Destinatio
 
 安装后，让支持 Agent Skills 的智能体使用 `codex-windows-fast-patch` 工作流处理当前机器上的 Codex Desktop 问题。
 
+这个 skill 会要求智能体在正式操作前先尝试从 GitHub 检查并同步最新版。如果网络不可用、GitHub 访问失败或下载失败，更新步骤会被跳过，智能体应继续使用当前本地版本处理问题。
+
 这些脚本是参考实现和操作模板，不是跨所有机器都能直接运行的一键方案。实际处理时应先读取 `SKILL.md`，检查当前机器的 Codex 安装方式、MSIX 包路径、ASAR 内容、签名工具、插件目录和 Computer Use 文件状态，再决定执行、改写或只借鉴其中的步骤。
 
 一个典型请求是：`使用 codex-windows-fast-patch 这个 skill，检查并修复这台 Windows 机器上的 Codex Desktop Fast Mode、插件市场和 Computer Use 可用性问题。`

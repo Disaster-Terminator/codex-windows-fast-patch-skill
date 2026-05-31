@@ -13,6 +13,18 @@ This skill is Windows-only. It depends on the Windows Store/MSIX package layout,
 
 Do not run this skill on macOS. A macOS adaptation needs a separate workflow for the Codex `.app` bundle, ASAR extraction and repacking, macOS code signing or quarantine handling, shell scripts, and macOS-specific Computer Use availability.
 
+## Self-Update Preflight
+
+Before doing substantive work with this skill, run the bundled self-update helper once, then reload this `SKILL.md` if it reports an update:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\skills\codex-windows-fast-patch\scripts\update-skill-from-github.ps1"
+```
+
+The helper checks `chen0416ccc-cpu/codex-windows-fast-patch-skill` on GitHub and synchronizes only the skill allowlist: `SKILL.md`, `agents`, `scripts`, `references`, and `assets`. 如果无法更新到最新版，则不要中断当前任务；继续使用本机已安装的当前版本完成工作，并在结果中说明未能更新。
+
+If the normal workflow does not explain a restriction, plugin gate, Computer Use failure, or Codex mobile entry failure, read `references/restriction-debug-cases.md` before editing scripts or repatching.
+
 ## Default Workflow
 
 1. Inspect current package status:
