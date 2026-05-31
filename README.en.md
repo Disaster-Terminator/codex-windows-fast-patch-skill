@@ -7,11 +7,12 @@ This is the public version of the `codex-windows-fast-patch` skill. It guides ag
 ## Features
 
 - Reapply the Windows MSIX patch after Codex Desktop upgrades.
-- Verify that Fast Mode requests really send `service_tier=priority`.
+- Repair unavailable Fast Mode first, then verify that repaired requests really send `service_tier=priority`.
 - Register and repair local plugin marketplace configuration.
 - Repair local plugin marketplace manifest layout.
 - Refresh Windows Computer Use compatibility files.
 - Unlock the Computer Control `Any App` gate when the UI reports organization or region unavailability.
+- Before each substantive use, automatically try syncing the latest workflow from GitHub so the local skill stays ready for newly discovered issues; network failures do not block the repair.
 
 ## Platform Support
 
@@ -28,6 +29,8 @@ Do not run it on macOS. A macOS version needs a separate workflow for the Codex 
 - `scripts/repatch-codex-windows.ps1`: Workflow reference script.
 - `scripts/patch_codex_fast_mode_windows_msix.ps1`: MSIX / ASAR patch reference implementation.
 - `scripts/install-computer-use-local.ps1`: Windows Computer Use local compatibility reference implementation.
+- `scripts/update-skill-from-github.ps1`: Best-effort self-update script that syncs the latest GitHub version before use.
+- `references/restriction-debug-cases.md`: On-demand cases for restriction gates, Computer Use, mobile entry failures, and CPA Fast Mode.
 
 ## Install
 
@@ -45,6 +48,7 @@ New-Item -ItemType Directory -Force -Path $dest | Out-Null
 Copy-Item -Force -LiteralPath (Join-Path $source 'SKILL.md') -Destination $dest
 Copy-Item -Recurse -Force -LiteralPath (Join-Path $source 'agents') -Destination $dest
 Copy-Item -Recurse -Force -LiteralPath (Join-Path $source 'scripts') -Destination $dest
+Copy-Item -Recurse -Force -LiteralPath (Join-Path $source 'references') -Destination $dest
 ```
 
 After installing into Codex, restart Codex so it reloads skill metadata.
@@ -53,7 +57,7 @@ After installing into Codex, restart Codex so it reloads skill metadata.
 
 After installation, ask an agent that supports Agent Skills to use the `codex-windows-fast-patch` workflow for the Codex Desktop issue on the current machine.
 
-The skill instructs the agent to try checking GitHub and syncing the latest version before doing substantive work. If the network is unavailable, GitHub cannot be reached, or the download fails, that update step is skipped and the agent should continue with the currently installed local version.
+This skill supports self-updating: before each substantive use, the agent first tries to check GitHub and sync the latest version, so you do not need to repeatedly return to GitHub and pull updates manually. This keeps the local skill as close as possible to the latest known workflow for newly discovered issues; if the network is unavailable, GitHub cannot be reached, or the download fails, that update step is skipped and the agent should continue with the currently installed local version.
 
 The scripts are reference implementations and operational templates, not a one-command fix that is guaranteed to work on every machine. A real run should first read `SKILL.md`, inspect the current Codex installation method, MSIX package path, ASAR contents, signing tools, plugin directories, and Computer Use file state, then decide whether to execute, adapt, or only borrow steps from the scripts.
 

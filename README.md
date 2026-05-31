@@ -7,11 +7,12 @@
 ## 主要功能
 
 - 在 Codex Desktop 升级后重新应用 Windows MSIX 补丁。
-- 验证 Fast Mode 请求是否真的带上 `service_tier=priority`。
+- 修复 Fast Mode 无法使用，并在修复后验证请求是否真的带上 `service_tier=priority`。
 - 注册和修复本地插件市场配置。
 - 修复本地插件市场清单目录结构。
 - 刷新 Windows Computer Use 兼容文件。
 - 解除 Computer Control 页面里 `Any App` / `任意应用` 被组织或地区门控禁用的问题。
+- 每次正式使用前自动尝试从 GitHub 同步最新版，让本地 skill 尽量保持具备处理新问题的最新工作流；网络不可用时不会强制中断。
 
 ## 平台支持
 
@@ -28,6 +29,8 @@
 - `scripts/repatch-codex-windows.ps1`：工作流参考脚本。
 - `scripts/patch_codex_fast_mode_windows_msix.ps1`：MSIX / ASAR 补丁参考实现。
 - `scripts/install-computer-use-local.ps1`：Windows Computer Use 本地兼容文件安装和校验参考实现。
+- `scripts/update-skill-from-github.ps1`：使用前尽力同步 GitHub 最新版的自更新脚本。
+- `references/restriction-debug-cases.md`：限制解除、Computer Use、移动入口和 CPA Fast Mode 的按需诊断案例。
 
 ## 安装
 
@@ -45,6 +48,7 @@ New-Item -ItemType Directory -Force -Path $dest | Out-Null
 Copy-Item -Force -LiteralPath (Join-Path $source 'SKILL.md') -Destination $dest
 Copy-Item -Recurse -Force -LiteralPath (Join-Path $source 'agents') -Destination $dest
 Copy-Item -Recurse -Force -LiteralPath (Join-Path $source 'scripts') -Destination $dest
+Copy-Item -Recurse -Force -LiteralPath (Join-Path $source 'references') -Destination $dest
 ```
 
 安装到 Codex 后，重启 Codex，让它重新加载 skill 元数据。
@@ -53,7 +57,7 @@ Copy-Item -Recurse -Force -LiteralPath (Join-Path $source 'scripts') -Destinatio
 
 安装后，让支持 Agent Skills 的智能体使用 `codex-windows-fast-patch` 工作流处理当前机器上的 Codex Desktop 问题。
 
-这个 skill 会要求智能体在正式操作前先尝试从 GitHub 检查并同步最新版。如果网络不可用、GitHub 访问失败或下载失败，更新步骤会被跳过，智能体应继续使用当前本地版本处理问题。
+这个 skill 支持自更新：智能体每次正式使用前都会先尝试从 GitHub 检查并同步最新版，不需要你反复回到 GitHub 手动拉取更新。这样本地 skill 可以尽量跟上最新出现的问题和对应工作流；如果网络不可用、GitHub 访问失败或下载失败，更新步骤会被跳过，智能体应继续使用当前本地版本处理问题。
 
 这些脚本是参考实现和操作模板，不是跨所有机器都能直接运行的一键方案。实际处理时应先读取 `SKILL.md`，检查当前机器的 Codex 安装方式、MSIX 包路径、ASAR 内容、签名工具、插件目录和 Computer Use 文件状态，再决定执行、改写或只借鉴其中的步骤。
 
