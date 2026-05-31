@@ -44,12 +44,14 @@ Symptoms:
 - Computer Control settings shows `Computer Use 插件不可用`.
 - Desktop logs contain `computer-use native pipe startup failed` and `missing-helper-path`.
 - `codex plugin list` may show bundled plugins missing, disabled, or marketplace load errors.
+- The failure comes back after fully quitting Codex Desktop and reopening it.
 
 Checks:
 
 - Inspect `%USERPROFILE%\.codex\.tmp\bundled-marketplaces\openai-bundled\.agents\plugins\marketplace.json`.
 - Inspect `%USERPROFILE%\.codex\.tmp\bundled-marketplaces\openai-bundled\plugins\computer-use`.
 - Inspect running `extension-host` processes whose paths are under `%USERPROFILE%\.codex\plugins\cache\openai-bundled`.
+- Inspect `%USERPROFILE%\.codex\chrome-native-hosts.json`; remove stale entries whose `extensionHostPath` or `browserClientPath` points to a missing file.
 
 Action:
 

@@ -633,6 +633,56 @@ function Stop-OpenAiBundledExtensionHosts {
   }
 }
 
+function Remove-StaleChromeNativeHostEntries {
+  $statePath = Join-Path $CodexHome 'chrome-native-hosts.json'
+  if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) {
+    return
+  }
+
+  try {
+    $json = Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json
+  } catch {
+    Write-Log "warning: failed to parse chrome-native-hosts.json: $($_.Exception.Message)"
+    return
+  }
+
+  $entries = @($json.chromeNativeHosts)
+  if ($entries.Count -eq 0) {
+    return
+  }
+
+  $kept = @()
+  $removed = 0
+  foreach ($entry in $entries) {
+    $missingPaths = @()
+    foreach ($propertyName in @('extensionHostPath', 'browserClientPath')) {
+      $path = [string]$entry.$propertyName
+      if (-not [string]::IsNullOrWhiteSpace($path) -and -not (Test-Path -LiteralPath $path)) {
+        $missingPaths += "${propertyName}=$path"
+      }
+    }
+
+    if ($missingPaths.Count -gt 0) {
+      Write-Log "removing stale Chrome native-host entry: $($missingPaths -join '; ')"
+      $removed += 1
+    } else {
+      $kept += $entry
+    }
+  }
+
+  if ($removed -eq 0) {
+    return
+  }
+
+  $backupPath = "$statePath.stale.bak"
+  if (-not (Test-Path -LiteralPath $backupPath)) {
+    Copy-Item -LiteralPath $statePath -Destination $backupPath -Force
+  }
+
+  $json.chromeNativeHosts = @($kept)
+  ConvertTo-JsonFile $statePath $json
+}
+
 function Sync-BundledMarketplaceFromInstalledApp {
   param([string]$MarketplaceRoot)
 
@@ -825,6 +875,7 @@ function Install-ComputerUse {
   Assert-UnderPath $cacheVersionRoot $cacheRoot
   Assert-UnderPath $latestPath $cacheRoot
 
+  Remove-StaleChromeNativeHostEntries
   Sync-BundledMarketplaceFromInstalledApp $marketplaceRoot
   Write-PluginTree $pluginSourceRoot
   Write-PluginTree $cacheVersionRoot
