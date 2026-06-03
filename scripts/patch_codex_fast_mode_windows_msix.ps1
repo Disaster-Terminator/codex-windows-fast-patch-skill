@@ -384,9 +384,12 @@ function Write-PatcherFiles {
   param([string]$WorkDir)
 
   $fastPatcherPath = Join-Path $WorkDir 'PatchFastMode.cjs'
+  $fastUiPatcherPath = Join-Path $WorkDir 'PatchFastModeUi.cjs'
+  $localePatcherPath = Join-Path $WorkDir 'PatchLocaleI18n.cjs'
   $pluginsPatcherPath = Join-Path $WorkDir 'PatchPlugins.cjs'
   $goalPatcherPath = Join-Path $WorkDir 'PatchGoal.cjs'
   $computerUsePatcherPath = Join-Path $WorkDir 'PatchComputerUseGates.cjs'
+  $browserUsePatcherPath = Join-Path $WorkDir 'PatchBrowserUseGates.cjs'
 
   Set-Content -LiteralPath $fastPatcherPath -Encoding UTF8 -Value @'
 const fs = require('node:fs');
@@ -445,6 +448,50 @@ if (!patched) {
   process.stderr.write('patch-target-not-found\n');
   process.exit(2);
 }
+fs.writeFileSync(file, next);
+process.stdout.write('patched');
+'@
+
+  Set-Content -LiteralPath $fastUiPatcherPath -Encoding UTF8 -Value @'
+const fs = require('node:fs');
+const file = process.argv[2];
+const text = fs.readFileSync(file, 'utf8');
+
+const patchedRe = /let\{data:\w+,isPending:(\w+)\}=[A-Za-z_$][\w$]*\([^)]+\),(\w+)=!!\w+\?\.isLoading\|\|\1,(\w+)=!\2&&\w+!=null&&\w+\?\.requirements\?\.featureRequirements\?\.fast_mode!==!1/;
+if (patchedRe.test(text)) {
+  process.stdout.write('already-patched');
+  process.exit(0);
+}
+
+const uiGateRe = /let\{data:(\w+),isPending:(\w+)\}=([A-Za-z_$][\w$]*\([^)]+\)),(\w+)=!!(\w+)\?\.isLoading\|\|(\w+)&&\2,(\w+)=\6&&!\4&&\1!=null&&\1\?\.requirements\?\.featureRequirements\?\.fast_mode!==!1/;
+const match = text.match(uiGateRe);
+if (!match) {
+  process.stderr.write('fast-ui-patch-target-not-found\n');
+  process.exit(2);
+}
+
+const [, dataVar, pendingVar, queryCall, loadingVar, authStateVar, chatgptOnlyVar, allowedVar] = match;
+const replacement = `let{data:${dataVar},isPending:${pendingVar}}=${queryCall},${loadingVar}=!!${authStateVar}?.isLoading||${pendingVar},${allowedVar}=!${loadingVar}&&${dataVar}!=null&&${dataVar}?.requirements?.featureRequirements?.fast_mode!==!1`;
+fs.writeFileSync(file, text.replace(uiGateRe, replacement));
+process.stdout.write('patched');
+'@
+
+  Set-Content -LiteralPath $localePatcherPath -Encoding UTF8 -Value @'
+const fs = require('node:fs');
+const file = process.argv[2];
+const text = fs.readFileSync(file, 'utf8');
+
+if (!text.includes('enable_i18n') && text.includes('locale_source')) {
+  process.stdout.write('already-patched');
+  process.exit(0);
+}
+
+let next = text.replace(/(\w+=)\w+\?\.get\(`enable_i18n`,!1\)/, '$1!0');
+if (next === text) {
+  process.stderr.write('locale-i18n-patch-target-not-found\n');
+  process.exit(2);
+}
+
 fs.writeFileSync(file, next);
 process.stdout.write('patched');
 '@
@@ -730,11 +777,136 @@ patchRemoteControlMain(remoteControlMainFile);
 process.stdout.write(changed ? 'patched' : 'already-patched');
 '@
 
+  Set-Content -LiteralPath $browserUsePatcherPath -Encoding UTF8 -Value @'
+const fs = require('node:fs');
+const [featureHookFile, sidebarAvailabilityFile, desktopFeatureSenderFile, desktopFeatureMainFile] = process.argv.slice(2);
+let changed = false;
+
+function read(file) {
+  return fs.readFileSync(file, 'utf8');
+}
+
+function writeIfChanged(file, before, after) {
+  if (after !== before) {
+    fs.writeFileSync(file, after);
+    changed = true;
+  }
+}
+
+function patchFeatureHook(file) {
+  const before = read(file);
+  if (!before.includes('featureName:`browser_use_external`') || !before.includes('featureName:`browser_use`')) {
+    process.stderr.write('browser-use-feature-hook-target-not-found\n');
+    process.exit(2);
+  }
+
+  let after = before.replace(
+    /let c=u\(s\),d=a===`chrome-extension`\|\|o&&c\.enabled&&!c\.isLoading,f=a===`chrome-extension`\?!1:c\.isLoading,p;/,
+    'let c={enabled:!0,isLoading:!1},d=!0,f=!1,p;'
+  );
+  after = after.replace(
+    /s=t\(c\),d=i\(`410262010`\),f;/,
+    's=!0,d=!0,f;'
+  );
+  after = after.replace(
+    /let p=u\(f\),m=o\(e\.runCodexInWsl\),h=p\.enabled&&!p\.isLoading,_=p\.isLoading,v=m===!0,y;/,
+    'let p={enabled:!0,isLoading:!1},m=!1,h=!0,_=!1,v=!1,y;'
+  );
+
+  if (after === before &&
+      !before.includes('let c={enabled:!0,isLoading:!1},d=!0,f=!1,p;') &&
+      !before.includes('s=!0,d=!0,f;') &&
+      !before.includes('let p={enabled:!0,isLoading:!1},m=!1,h=!0,_=!1,v=!1,y;')) {
+    process.stderr.write('browser-use-feature-hook-patch-target-not-found\n');
+    process.exit(2);
+  }
+  writeIfChanged(file, before, after);
+}
+
+function patchSidebarAvailability(file) {
+  const before = read(file);
+  if (!before.includes('in_app_browser')) {
+    process.stderr.write('browser-sidebar-availability-target-not-found\n');
+    process.exit(2);
+  }
+
+  let after = before.replace(
+    /var i=`in_app_browser`,a=t\(n,\(\{get:t\}\)=>\{let\{data:n\}=t\(r,t\(e\)\),a=n\?\.find\(e=>e\.name===i\);return n!=null&&a\?\.enabled!==!1\}\);/,
+    'var i=`in_app_browser`,a=t(n,()=>!0);'
+  );
+  if (after === before && !before.includes('a=t(n,()=>!0)')) {
+    process.stderr.write('browser-sidebar-availability-patch-target-not-found\n');
+    process.exit(2);
+  }
+  writeIfChanged(file, before, after);
+}
+
+function patchDesktopFeatureSender(file) {
+  const before = read(file);
+  if (!before.includes('browser_use_availability_resolved') || !before.includes('electron-desktop-features-changed')) {
+    process.stderr.write('browser-use-desktop-feature-sender-target-not-found\n');
+    process.exit(2);
+  }
+
+  let after = before.replace(
+    /ci\.dispatchMessage\(`electron-desktop-features-changed`,\{ambientSuggestions:n,appshotsEnabled:r,codexChronicleConfig:s,inAppBrowserUse:p\.available,inAppBrowserUseAllowed:p\.allowed,browserPane:c,externalBrowserUse:h\.available,externalBrowserUseAllowed:h\.allowed,computerUse:_\.available,computerUseNodeRepl:_\.available,sites:i,control:v,dil:y,multiBrowserTabs:l,multiWindow:b,processManager:x\}\)/,
+    'ci.dispatchMessage(`electron-desktop-features-changed`,{ambientSuggestions:n,appshotsEnabled:r,codexChronicleConfig:s,inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,browserPane:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0,computerUse:_.available,computerUseNodeRepl:_.available,sites:i,control:v,dil:y,multiBrowserTabs:l,multiWindow:b,processManager:x})'
+  );
+  after = after.replace(
+    /J\.info\(`browser_use_availability_resolved`,\{safe:\{available:p\.available,platform:u\?\.osName\?\?`unknown`,reason:p\.reason,release:u\?\.version\?\?`unknown`\},sensitive:\{browserPane:c\}\}\)/,
+    'J.info(`browser_use_availability_resolved`,{safe:{available:!0,platform:u?.osName??`unknown`,reason:`local-patched`,release:u?.version??`unknown`},sensitive:{browserPane:!0}})'
+  );
+
+  if (after === before &&
+      !before.includes('inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,browserPane:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0')) {
+    process.stderr.write('browser-use-desktop-feature-sender-patch-target-not-found\n');
+    process.exit(2);
+  }
+  writeIfChanged(file, before, after);
+}
+
+function patchDesktopFeatureMain(file) {
+  const before = read(file);
+  const patchedMainFragment = 'browserPane:!0,inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0';
+  if (!before.includes(patchedMainFragment) &&
+      (!before.includes('externalBrowserUse:o.externalBrowserUse') || !before.includes('inAppBrowserUse:o.inAppBrowserUse'))) {
+    process.stderr.write('browser-use-desktop-feature-main-target-not-found\n');
+    process.exit(2);
+  }
+
+  let after = before.replace(
+    /let a=i===`win32`&&n\.CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE===`1`\?\{\.\.\.e,computerUse:!0,computerUseNodeRepl:!0\}:e,o=/,
+    'let a=i===`win32`?{...e,browserPane:!0,inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0,...n.CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE===`1`?{computerUse:!0,computerUseNodeRepl:!0}:{}}:e,o='
+  );
+  after = after.replace(
+    /p\(\{ambientSuggestions:o\.ambientSuggestions,appshotsEnabled:o\.appshotsEnabled,inAppBrowserUse:o\.inAppBrowserUse,inAppBrowserUseAllowed:o\.inAppBrowserUseAllowed,browserPane:o\.browserPane,externalBrowserUse:o\.externalBrowserUse,externalBrowserUseAllowed:o\.externalBrowserUseAllowed,computerUse:o\.computerUse,computerUseNodeRepl:o\.computerUseNodeRepl,sites:o\.sites,control:o\.control,dil:o\.dil,multiBrowserTabs:o\.multiBrowserTabs,multiWindow:o\.multiWindow,processManager:o\.processManager\}\)/,
+    'p({ambientSuggestions:o.ambientSuggestions,appshotsEnabled:o.appshotsEnabled,inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,browserPane:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0,computerUse:o.computerUse,computerUseNodeRepl:o.computerUseNodeRepl,sites:o.sites,control:o.control,dil:o.dil,multiBrowserTabs:o.multiBrowserTabs,multiWindow:o.multiWindow,processManager:o.processManager})'
+  );
+
+  if (after === before &&
+      !before.includes(patchedMainFragment)) {
+    process.stderr.write('browser-use-desktop-feature-main-patch-target-not-found\n');
+    process.exit(2);
+  }
+  writeIfChanged(file, before, after);
+}
+
+patchFeatureHook(featureHookFile);
+patchSidebarAvailability(sidebarAvailabilityFile);
+patchDesktopFeatureSender(desktopFeatureSenderFile);
+patchDesktopFeatureMain(desktopFeatureMainFile);
+
+process.stdout.write(changed ? 'patched' : 'already-patched');
+'@
+
   return [pscustomobject]@{
     Fast = $fastPatcherPath
+    FastUi = $fastUiPatcherPath
+    LocaleI18n = $localePatcherPath
     Plugins = $pluginsPatcherPath
     Goal = $goalPatcherPath
     ComputerUse = $computerUsePatcherPath
+    BrowserUse = $browserUsePatcherPath
   }
 }
 
@@ -747,8 +919,95 @@ function Find-PatchTargets {
   if (-not (Test-Path -LiteralPath $assetsDir -PathType Container)) {
     Fail "assets directory not found in extracted asar: $assetsDir"
   }
+  $viteBuildDir = Join-Path $ExtractDir '.vite\build'
 
-  $fastModeTarget = Invoke-RgList $RgPath 'featureRequirements\?\.fast_mode' $assetsDir | Select-Object -First 1
+  $fastModeTarget = $null
+  foreach ($candidate in (Get-ChildItem -LiteralPath $assetsDir -Filter 'read-service-tier-for-request-*.js' -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)) {
+    $text = Get-Content -Raw -LiteralPath $candidate
+    if ($text.Contains('featureRequirements?.fast_mode')) {
+      $fastModeTarget = $candidate
+      break
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($fastModeTarget)) {
+    foreach ($candidate in (Invoke-RgList $RgPath 'Failed to read service tier for request' $assetsDir)) {
+      $text = Get-Content -Raw -LiteralPath $candidate
+      if ($text.Contains('featureRequirements?.fast_mode')) {
+        $fastModeTarget = $candidate
+        break
+      }
+    }
+  }
+  $fastModeUiTarget = $null
+  foreach ($candidate in (Get-ChildItem -LiteralPath $assetsDir -Filter 'use-service-tier-settings-*.js' -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)) {
+    $text = Get-Content -Raw -LiteralPath $candidate
+    if ($text.Contains('isServiceTierAllowed') -and $text.Contains('featureRequirements?.fast_mode')) {
+      $fastModeUiTarget = $candidate
+      break
+    }
+  }
+  $localeI18nTarget = $null
+  $localeCandidates = @(
+    Invoke-RgList $RgPath 'enable_i18n' $assetsDir
+    Invoke-RgList $RgPath 'locale_source' $assetsDir
+  ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique
+  foreach ($candidate in $localeCandidates) {
+    $text = Get-Content -Raw -LiteralPath $candidate
+    if ($text.Contains('locale_source') -and $text.Contains('localeOverride')) {
+      $localeI18nTarget = $candidate
+      break
+    }
+  }
+  $browserUseFeatureHookTarget = $null
+  foreach ($candidate in (Invoke-RgList $RgPath 'featureName:`browser_use_external`' $assetsDir)) {
+    $text = Get-Content -Raw -LiteralPath $candidate
+    if ($text.Contains('featureName:`browser_use_external`') -and
+        $text.Contains('featureName:`browser_use`') -and
+        $text.Contains('featureName:`computer_use`')) {
+      $browserUseFeatureHookTarget = $candidate
+      break
+    }
+  }
+  $browserSidebarAvailabilityTarget = $null
+  foreach ($candidate in (Get-ChildItem -LiteralPath $assetsDir -Filter 'browser-sidebar-availability-*.js' -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)) {
+    $text = Get-Content -Raw -LiteralPath $candidate
+    if ($text.Contains('in_app_browser')) {
+      $browserSidebarAvailabilityTarget = $candidate
+      break
+    }
+  }
+  $desktopFeatureSenderTarget = $null
+  $desktopFeatureSenderCandidates = @(
+    Invoke-RgList $RgPath 'browser_use_availability_resolved' $assetsDir
+    Invoke-RgList $RgPath 'inAppBrowserUse:!0' $assetsDir
+  ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique
+  foreach ($candidate in $desktopFeatureSenderCandidates) {
+    $text = Get-Content -Raw -LiteralPath $candidate
+    if ($text.Contains('electron-desktop-features-changed') -and
+        (($text.Contains('inAppBrowserUse:p.available') -and
+          $text.Contains('externalBrowserUse:h.available')) -or
+         $text.Contains('inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,browserPane:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0'))) {
+      $desktopFeatureSenderTarget = $candidate
+      break
+    }
+  }
+  $desktopFeatureMainTarget = $null
+  if (Test-Path -LiteralPath $viteBuildDir -PathType Container) {
+    $desktopFeatureMainCandidates = @(
+      Invoke-RgList $RgPath 'externalBrowserUse:o.externalBrowserUse' $viteBuildDir
+      Invoke-RgList $RgPath 'browserPane:!0' $viteBuildDir
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique
+    foreach ($candidate in $desktopFeatureMainCandidates) {
+      $text = Get-Content -Raw -LiteralPath $candidate
+      if ($text.Contains('CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE') -and
+          (($text.Contains('externalBrowserUse:o.externalBrowserUse') -and
+            $text.Contains('inAppBrowserUse:o.inAppBrowserUse')) -or
+           $text.Contains('browserPane:!0,inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0'))) {
+        $desktopFeatureMainTarget = $candidate
+        break
+      }
+    }
+  }
   $pluginSidebarTarget = Invoke-RgList $RgPath '533078438' $assetsDir | Select-Object -First 1
   $pluginSkillsTarget = Invoke-RgList $RgPath 'pluginDeepLinkAuthBlocked===!0' $assetsDir | Select-Object -First 1
   $pluginDetailTarget = Invoke-RgList $RgPath 'pluginDeepLinkAuthBlocked:!0' $assetsDir | Select-Object -First 1
@@ -766,6 +1025,24 @@ function Find-PatchTargets {
 
   if ([string]::IsNullOrWhiteSpace($fastModeTarget)) {
     Fail 'could not find patch target: fastModeTarget'
+  }
+  if ([string]::IsNullOrWhiteSpace($fastModeUiTarget)) {
+    Fail 'could not find patch target: fastModeUiTarget'
+  }
+  if ([string]::IsNullOrWhiteSpace($localeI18nTarget)) {
+    Fail 'could not find patch target: localeI18nTarget'
+  }
+  if ([string]::IsNullOrWhiteSpace($browserUseFeatureHookTarget)) {
+    Fail 'could not find Browser Use feature hook gate in extracted assets'
+  }
+  if ([string]::IsNullOrWhiteSpace($browserSidebarAvailabilityTarget)) {
+    Fail 'could not find browser sidebar availability gate in extracted assets'
+  }
+  if ([string]::IsNullOrWhiteSpace($desktopFeatureSenderTarget)) {
+    Fail 'could not find desktop browser-use feature sender in extracted assets'
+  }
+  if ([string]::IsNullOrWhiteSpace($desktopFeatureMainTarget)) {
+    Fail 'could not find desktop browser-use feature receiver in extracted ASAR'
   }
   $oldPluginTargetsFound = -not [string]::IsNullOrWhiteSpace($pluginSidebarTarget) -and
                            -not [string]::IsNullOrWhiteSpace($pluginSkillsTarget) -and
@@ -882,7 +1159,6 @@ function Find-PatchTargets {
   }
 
   $remoteControlMainTarget = $null
-  $viteBuildDir = Join-Path $ExtractDir '.vite\build'
   if (Test-Path -LiteralPath $viteBuildDir -PathType Container) {
     foreach ($candidate in (Invoke-RgList $RgPath 'load_remote_control_unauthed' $viteBuildDir)) {
       $text = Get-Content -Raw -LiteralPath $candidate
@@ -897,12 +1173,18 @@ function Find-PatchTargets {
   }
 
   Write-Log "fast-mode patch target: $fastModeTarget"
+  Write-Log "fast-mode UI patch target: $fastModeUiTarget"
+  Write-Log "locale i18n patch target: $localeI18nTarget"
   Write-Log "plugin sidebar patch target: $pluginSidebarTarget"
   Write-Log "plugin skills-page patch target: $pluginSkillsTarget"
   Write-Log "plugin detail patch target: $pluginDetailTarget"
   Write-Log "plugin page auth patch target: $pluginPageAuthTarget"
   Write-Log "goal composer patch target: $goalComposerTarget"
   Write-Log "goal slash-command patch target: $goalSlashTarget"
+  Write-Log "browser-use feature hook patch target: $browserUseFeatureHookTarget"
+  Write-Log "browser-sidebar availability patch target: $browserSidebarAvailabilityTarget"
+  Write-Log "desktop browser-use sender patch target: $desktopFeatureSenderTarget"
+  Write-Log "desktop browser-use receiver patch target: $desktopFeatureMainTarget"
   Write-Log "computer-use availability patch target: $computerUseAvailabilityTarget"
   Write-Log "computer-use install-flow patch target: $computerUseInstallFlowTarget"
   Write-Log "computer-use mobile setup patch target: $computerUseMobileSetupTarget"
@@ -911,12 +1193,18 @@ function Find-PatchTargets {
 
   return [pscustomobject]@{
     FastMode = $fastModeTarget
+    FastModeUi = $fastModeUiTarget
+    LocaleI18n = $localeI18nTarget
     PluginSidebar = $pluginSidebarTarget
     PluginSkills = $pluginSkillsTarget
     PluginDetail = $pluginDetailTarget
     PluginPageAuth = $pluginPageAuthTarget
     GoalComposer = $goalComposerTarget
     GoalSlash = $goalSlashTarget
+    BrowserUseFeatureHook = $browserUseFeatureHookTarget
+    BrowserSidebarAvailability = $browserSidebarAvailabilityTarget
+    DesktopFeatureSender = $desktopFeatureSenderTarget
+    DesktopFeatureMain = $desktopFeatureMainTarget
     ComputerUseAvailability = $computerUseAvailabilityTarget
     ComputerUseInstallFlow = $computerUseInstallFlowTarget
     ComputerUseMobileSetup = $computerUseMobileSetupTarget
@@ -966,6 +1254,10 @@ function Invoke-PatchAppAsar {
 
   $fast = Invoke-NodePatcher $nodePath $patchers.Fast @($targets.FastMode)
   Write-Log "fast-mode patch result: $fast"
+  $fastUi = Invoke-NodePatcher $nodePath $patchers.FastUi @($targets.FastModeUi)
+  Write-Log "fast-mode UI patch result: $fastUi"
+  $localeI18n = Invoke-NodePatcher $nodePath $patchers.LocaleI18n @($targets.LocaleI18n)
+  Write-Log "locale i18n patch result: $localeI18n"
   $pluginArgs = @(
     $(if ([string]::IsNullOrWhiteSpace($targets.PluginSidebar)) { '__none__' } else { [string]$targets.PluginSidebar })
     $(if ([string]::IsNullOrWhiteSpace($targets.PluginSkills)) { '__none__' } else { [string]$targets.PluginSkills })
@@ -976,6 +1268,8 @@ function Invoke-PatchAppAsar {
   Write-Log "plugin patch result: $plugins"
   $goal = Invoke-NodePatcher $nodePath $patchers.Goal @($targets.GoalComposer, $targets.GoalSlash)
   Write-Log "goal patch result: $goal"
+  $browserUse = Invoke-NodePatcher $nodePath $patchers.BrowserUse @($targets.BrowserUseFeatureHook, $targets.BrowserSidebarAvailability, $targets.DesktopFeatureSender, $targets.DesktopFeatureMain)
+  Write-Log "browser-use gate patch result: $browserUse"
   $computerUse = Invoke-NodePatcher $nodePath $patchers.ComputerUse @($targets.ComputerUseAvailability, $targets.ComputerUseInstallFlow, $targets.ComputerUseMobileSetup, $targets.CodexMobileSetupFlow, $targets.RemoteControlMain)
   Write-Log "computer-use gate patch result: $computerUse"
 
@@ -984,7 +1278,13 @@ function Invoke-PatchAppAsar {
     return $false
   }
 
-  if ($fast -eq 'already-patched' -and $plugins -eq 'already-patched' -and $goal -eq 'already-patched' -and $computerUse -eq 'already-patched') {
+  if ($fast -eq 'already-patched' -and
+      $fastUi -eq 'already-patched' -and
+      $localeI18n -eq 'already-patched' -and
+      $plugins -eq 'already-patched' -and
+      $goal -eq 'already-patched' -and
+      $browserUse -eq 'already-patched' -and
+      $computerUse -eq 'already-patched') {
     Write-Log 'asar patch already present'
     return $false
   }

@@ -41,6 +41,30 @@ Action:
 - Update script search logic when asset filenames drift between Codex Desktop versions.
 - For the newer plugin page auth shape, force only the local auth-blocked variable to `false`; do not require the old sidebar, skills-page, and detail-page chunks to exist.
 
+## Browser Use Or Chrome Still Shows Unavailable
+
+Symptoms:
+
+- Chrome or browser use appears installed but Codex Desktop says it is unavailable.
+- The plugin list shows `chrome@openai-bundled` as installed/enabled, but browser actions do not appear or do not run.
+- Desktop logs contain `browser_use_availability_resolved` with `available=false`, commonly with a reason such as `statsig-disabled`.
+
+Checks:
+
+- Confirm the patch script logged `browser-use gate patch result` as `patched` or `already-patched`.
+- Inspect the newest Desktop log under `%LOCALAPPDATA%\Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\Local\Codex\Logs\<year>\<month>\<day>`.
+- If the log says `reason=local-patched`, the Desktop availability gate is open; continue by checking the Chrome extension, native host manifest, and plugin cache.
+- If the log still says `statsig-disabled`, re-extract the ASAR and inspect targets for `featureName:\`browser_use_external\``, `featureName:\`browser_use\``, `browser-sidebar-availability-*.js`, `browser_use_availability_resolved`, and `.vite\build\main-*.js`.
+- Check the native messaging host manifest at `%LOCALAPPDATA%\OpenAI\extension\com.openai.codexextension.json` and the registry key `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.openai.codexextension`.
+- Check that `codex plugin list` reports `chrome@openai-bundled` as `installed, enabled`, and that the cached plugin path under `%USERPROFILE%\.codex\plugins\cache\openai-bundled\chrome` exists.
+
+Action:
+
+- Reapply the MSIX patch when `browser_use_availability_resolved` is still `statsig-disabled`.
+- Reinstall or repair the Chrome plugin/native host when the log is `local-patched` but the browser smoke test cannot reach Chrome.
+- Validate with a real browser smoke test, not just plugin-list output. A good minimal test opens a controlled tab such as `https://example.com/`, asks the extension backend for the active tab, confirms the title `Example Domain`, and then closes the temporary tab.
+- Keep the distinction explicit: `local-patched` proves the Desktop gate is open; it does not prove Chrome native messaging or the extension backend is healthy.
+
 ## Computer Use Settings Says Plugin Unavailable
 
 Symptoms:

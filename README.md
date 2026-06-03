@@ -7,9 +7,11 @@
 ## 主要功能
 
 - 在 Codex Desktop 升级后重新应用 Windows MSIX 补丁。
-- 修复 Fast Mode 无法使用，并在修复后验证请求是否真的带上 `service_tier=priority`。
+- 同时修复 Fast Mode 请求路径和设置页 UI 路径，并在修复后验证请求是否真的带上 `service_tier=priority`。
+- 保持 locale/i18n 开启，避免已配置的界面语言仅因为包内 `enable_i18n` 被禁用而重启后回到英文。
 - 注册和修复本地插件市场配置。
 - 修复本地插件市场清单目录结构。
+- 解除 in-app browser、browser pane 和外部 Chrome/browser_use 在 Store 版里被本地 feature / Statsig 门控禁用的问题。
 - 刷新 Windows Computer Use 兼容文件。
 - 解除 Computer Control 页面里 `Any App` / `任意应用` 被组织或地区门控禁用的问题。
 - 修复 Codex 移动版 / 连接页远程控制设置在未授权时跳转、报错或卡住退不出的问题。
@@ -33,7 +35,7 @@
 - `scripts/install-computer-use-local.ps1`：Windows Computer Use 本地兼容文件安装和校验参考实现。
 - `scripts/manage-codex-backups.ps1`：本机 Codex 配置、MCP、skills 和 marketplaces 的备份管理脚本。
 - `scripts/update-skill-from-github.ps1`：使用前尽力同步 GitHub 最新版的自更新脚本。
-- `references/restriction-debug-cases.md`：限制解除、Computer Use、移动入口和 CPA Fast Mode 的按需诊断案例。
+- `references/restriction-debug-cases.md`：限制解除、Chrome/browser_use、Computer Use、移动入口和 CPA Fast Mode 的按需诊断案例。
 
 ## 安装
 
@@ -64,7 +66,14 @@ Copy-Item -Recurse -Force -LiteralPath (Join-Path $source 'references') -Destina
 
 这些脚本是参考实现和操作模板，不是跨所有机器都能直接运行的一键方案。实际处理时应先读取 `SKILL.md`，检查当前机器的 Codex 安装方式、MSIX 包路径、ASAR 内容、签名工具、插件目录和 Computer Use 文件状态，再决定执行、改写或只借鉴其中的步骤。
 
-一个典型请求是：`使用 codex-windows-fast-patch 这个 skill，检查并修复这台 Windows 机器上的 Codex Desktop Fast Mode、插件市场和 Computer Use 可用性问题。`
+一个典型请求是：`使用 codex-windows-fast-patch 这个 skill，检查并修复这台 Windows 机器上的 Codex Desktop Fast Mode、语言/locale、Chrome browser_use、插件市场和 Computer Use 可用性问题。`
+
+完整运行后的预期验证结果：
+
+- 补丁日志包含 `fast-mode UI patch result`、`locale i18n patch result` 和 `browser-use gate patch result`，结果为 `patched` 或 `already-patched`。
+- Fast Mode 线缆验证能在 Codex Desktop 的 `/v1/responses` 请求里捕获 `service_tier=priority`。
+- 如果本次修复包含浏览器能力，Desktop 日志里 `browser_use_availability_resolved` 显示 `available=true` 和 `reason=local-patched`。
+- 如果需要 Chrome 控制，`codex plugin list` 显示 `chrome@openai-bundled` 为 `installed, enabled`，native messaging host manifest 指向存在的文件，并且真实 smoke test 能读到受控标签页标题，例如 `Example Domain`。
 
 ## 备份管理
 

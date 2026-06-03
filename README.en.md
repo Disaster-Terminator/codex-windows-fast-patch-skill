@@ -7,9 +7,11 @@ This is the public version of the `codex-windows-fast-patch` skill. It guides ag
 ## Features
 
 - Reapply the Windows MSIX patch after Codex Desktop upgrades.
-- Repair unavailable Fast Mode first, then verify that repaired requests really send `service_tier=priority`.
+- Repair unavailable Fast Mode in both request and settings UI paths, then verify that repaired requests really send `service_tier=priority`.
+- Keep locale/i18n enabled so a configured UI language is not forced back to English only because the shipped webview bundle disables `enable_i18n`.
 - Register and repair local plugin marketplace configuration.
 - Repair local plugin marketplace manifest layout.
+- Unlock in-app browser, browser pane, and external Chrome/browser_use availability gates when the Store build disables them through local feature/Statsig checks.
 - Refresh Windows Computer Use compatibility files.
 - Unlock the Computer Control `Any App` gate when the UI reports organization or region unavailability.
 - Keep the Codex Mobile / Connections remote-control setup flow from redirecting, error-looping, or becoming hard to close when remote-control auth is missing.
@@ -33,7 +35,7 @@ Do not run it on macOS. A macOS version needs a separate workflow for the Codex 
 - `scripts/install-computer-use-local.ps1`: Windows Computer Use local compatibility reference implementation.
 - `scripts/manage-codex-backups.ps1`: Backup manager for local Codex config, MCP, skills, and marketplaces.
 - `scripts/update-skill-from-github.ps1`: Best-effort self-update script that syncs the latest GitHub version before use.
-- `references/restriction-debug-cases.md`: On-demand cases for restriction gates, Computer Use, mobile entry failures, and CPA Fast Mode.
+- `references/restriction-debug-cases.md`: On-demand cases for restriction gates, Chrome/browser_use, Computer Use, mobile entry failures, and CPA Fast Mode.
 
 ## Install
 
@@ -64,7 +66,14 @@ This skill supports self-updating: before each substantive use, the agent first 
 
 The scripts are reference implementations and operational templates, not a one-command fix that is guaranteed to work on every machine. A real run should first read `SKILL.md`, inspect the current Codex installation method, MSIX package path, ASAR contents, signing tools, plugin directories, and Computer Use file state, then decide whether to execute, adapt, or only borrow steps from the scripts.
 
-Example request: `Use the codex-windows-fast-patch skill to inspect and repair Codex Desktop Fast Mode, plugin marketplace, and Computer Use availability on this Windows machine.`
+Example request: `Use the codex-windows-fast-patch skill to inspect and repair Codex Desktop Fast Mode, language/locale, Chrome browser_use, plugin marketplace, and Computer Use availability on this Windows machine.`
+
+Expected verification after a full run:
+
+- The patch log includes `fast-mode UI patch result`, `locale i18n patch result`, and `browser-use gate patch result`, each as `patched` or `already-patched`.
+- Fast Mode wire verification captures `service_tier=priority` in Codex Desktop's `/v1/responses` request.
+- Desktop logs show `browser_use_availability_resolved` with `available=true` and `reason=local-patched` when browser use is part of the repair.
+- If Chrome control is required, `codex plugin list` shows `chrome@openai-bundled` as `installed, enabled`, the native messaging host manifest points to existing files, and a smoke test can read a controlled tab title such as `Example Domain`.
 
 ## Backup Management
 
