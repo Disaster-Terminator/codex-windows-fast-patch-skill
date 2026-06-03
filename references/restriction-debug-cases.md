@@ -13,10 +13,12 @@ Checks:
 
 - Capture the actual `/v1/responses` request made by Codex Desktop and verify `service_tier=priority` on the wire.
 - If the upstream is CPA or another proxy, inspect the proxy-side override rules. Local capture only proves Codex sent the parameter; the proxy can still drop, rewrite, or ignore it.
+- In newer Codex builds, inspect `webview\assets\read-service-tier-for-request-*.js`. A shape like `return authMethod===\`chatgpt\` ? featureRequirements?.fast_mode !== false : false` means API-key/local requests are still forced out of Fast Mode.
 
 Action:
 
 - For CPA, add an override rule for the Codex-facing model names and force `service_tier` as a string value of `priority`.
+- Patch the Fast Mode gate by removing the `chatgpt`-only branch while preserving the feature-requirement lookup, then rerun wire capture.
 - Treat proxy configuration as part of Fast Mode validation, not as optional documentation.
 
 ## UI Gate Is Still Blocking A Feature
@@ -30,12 +32,14 @@ Checks:
 
 - Search extracted ASAR webview assets by stable code behavior instead of fixed filenames.
 - For Computer Use, relevant patterns include `featureName:\`computer_use\``, Statsig gate `1506311413`, `installPlugin:async`, and `openPluginInstall`.
+- If old plugin gate markers such as `533078438` or `pluginDeepLinkAuthBlocked` are gone, inspect `webview\assets\plugins-page-*.js` for `openPluginInstall`, `authMethod:`, and an auth-blocked assignment shaped like `{authMethod:x}=..., y=authBlocked(x),`.
 
 Action:
 
 - Patch the extracted ASAR through the MSIX repack workflow.
 - Do not edit `C:\Program Files\WindowsApps` in place.
 - Update script search logic when asset filenames drift between Codex Desktop versions.
+- For the newer plugin page auth shape, force only the local auth-blocked variable to `false`; do not require the old sidebar, skills-page, and detail-page chunks to exist.
 
 ## Computer Use Settings Says Plugin Unavailable
 
@@ -59,6 +63,7 @@ Action:
 - Rerun `scripts\install-computer-use-local.ps1`.
 - Restart Codex Desktop.
 - Confirm the latest Desktop log ends with `computer-use native pipe startup ready`.
+- If `-StrictVerifyOnly` fails because `plugins\cache\openai-bundled\computer-use\latest\.codex-plugin\plugin.json` is missing, run `-VerifyOnly` once to rebuild the cached plugin and `latest` link, then rerun `-StrictVerifyOnly`.
 
 ## Sandbox Setup Refresh Fails With OS Error 740
 
@@ -96,6 +101,7 @@ Action:
 
 - Patch `codex-mobile-setup-flow-*.js` so a remote-control auth error does not navigate the settings modal to `/login` and return `null`.
 - Patch the main-process remote-control unauthenticated branch so it publishes a safe empty state instead of an auth-required loop.
+- In `.vite\build\main-*.js`, match the remote-control unauthenticated branch by behavior (`local_remote_control_client_id=null`, `authRequired:!0`, `clientAuthorized:!1`, `load_remote_control_unauthed`) rather than hard-coded minified class or logger names.
 - If logs still say `Sign in to ChatGPT in Codex Desktop`, the local patch can keep the UI usable, but real cross-device remote-control enrollment still requires ChatGPT Desktop sign-in, not only API-key Codex login.
 
 ## Self-Update Fails

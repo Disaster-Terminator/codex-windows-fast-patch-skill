@@ -395,11 +395,13 @@ const text = fs.readFileSync(file, 'utf8');
 
 const legacyPatchedRe = /function L\(e\)\{let (\w+)=v\(x\),(\w+)=e\?\.hostId\?\?\1,\{data:(\w+)\}=d\(E,\2\);return \3\?\.requirements\?\.featureRequirements\?\.fast_mode!==!1\}/;
 const currentDirectPatchedRe = /featureRequirements\?\.fast_mode===!1;return!\w+\}/;
+const currentAsyncPatchedRe = /async function \w+\(\w+,\w+\)\{let \w+=await \w+\(\w+,\w+\);return\(await \w+\.query\.fetch\(\w+,\{authMethod:\w+,hostId:\w+\}\)\)\.requirements\?\.featureRequirements\?\.fast_mode!==!1\}/;
 const legacyOriginalRe = /function L\(e\)\{let (\w+)=v\(x\),(\w+)=e\?\.hostId\?\?\1,(\w+)=O\(\2\),\{data:(\w+)\}=d\(E,\2\);return!\(\3\?\.authMethod!==`chatgpt`\|\|\4\?\.requirements\?\.featureRequirements\?\.fast_mode===!1\)\}/;
 const currentDirectOriginalRe = /function (\w+)\(e\)\{let (\w+)=([^,;]+),(\w+)=e\?\.hostId\?\?\2,(\w+)=(\w+\(\4\)),\{data:(\w+)\}=(\w+\(\w+,\4\)),(\w+)=\7\?\.requirements\?\.featureRequirements\?\.fast_mode===!1;return!\(\5\?\.authMethod!==`chatgpt`\|\|\9\)\}/;
+const currentAsyncOriginalRe = /async function (\w+)\((\w+),(\w+)\)\{let (\w+)=await ([A-Za-z_$][\w$]*)\(\2,\3\);return \4===`chatgpt`\?\(await \2\.query\.fetch\(([A-Za-z_$][\w$]*),\{authMethod:\4,hostId:\3\}\)\)\.requirements\?\.featureRequirements\?\.fast_mode!==!1:!1\}/;
 const currentSplitConditionRe = /if\((\w+)\?\.authMethod!==`chatgpt`\|\|(\w+)\)\{/;
 
-if (legacyPatchedRe.test(text) || (currentDirectPatchedRe.test(text) && !legacyOriginalRe.test(text) && !currentDirectOriginalRe.test(text) && !currentSplitConditionRe.test(text))) {
+if (legacyPatchedRe.test(text) || currentAsyncPatchedRe.test(text) || (currentDirectPatchedRe.test(text) && !legacyOriginalRe.test(text) && !currentDirectOriginalRe.test(text) && !currentSplitConditionRe.test(text))) {
   process.stdout.write('already-patched');
   process.exit(0);
 }
@@ -418,6 +420,13 @@ if (!patched) {
   if (currentMatch) {
     const [, fn, rootVar, rootExpr, hostVar, , , dataVar, dataCall, disabledVar] = currentMatch;
     next = next.replace(currentDirectOriginalRe, `function ${fn}(e){let ${rootVar}=${rootExpr},${hostVar}=e?.hostId??${rootVar},{data:${dataVar}}=${dataCall},${disabledVar}=${dataVar}?.requirements?.featureRequirements?.fast_mode===!1;return!${disabledVar}}`);
+    patched = true;
+  }
+
+  const currentAsyncMatch = next.match(currentAsyncOriginalRe);
+  if (currentAsyncMatch) {
+    const [, fn, hostManagerVar, hostIdVar, authMethodVar, authMethodFn, queryVar] = currentAsyncMatch;
+    next = next.replace(currentAsyncOriginalRe, `async function ${fn}(${hostManagerVar},${hostIdVar}){let ${authMethodVar}=await ${authMethodFn}(${hostManagerVar},${hostIdVar});return(await ${hostManagerVar}.query.fetch(${queryVar},{authMethod:${authMethodVar},hostId:${hostIdVar}})).requirements?.featureRequirements?.fast_mode!==!1}`);
     patched = true;
   }
 
@@ -442,8 +451,12 @@ process.stdout.write('patched');
 
   Set-Content -LiteralPath $pluginsPatcherPath -Encoding UTF8 -Value @'
 const fs = require('node:fs');
-const [sidebarFile, skillsFile, detailFile] = process.argv.slice(2);
+const [sidebarFile, skillsFile, detailFile, pageAuthFile] = process.argv.slice(2);
 let changed = false;
+
+function hasFile(file) {
+  return typeof file === 'string' && file.length > 0 && file !== '__none__' && fs.existsSync(file);
+}
 
 function rewriteFile(label, file, patchedRe, originalRe, replacement) {
   const text = fs.readFileSync(file, 'utf8');
@@ -457,32 +470,72 @@ function rewriteFile(label, file, patchedRe, originalRe, replacement) {
   changed = true;
 }
 
-rewriteFile(
-  'plugin-sidebar-gate',
-  sidebarFile,
-  /\{authMethod:(\w+)\}=([A-Za-z_$][\w$]*)\(\),(\w+)=([A-Za-z_$][\w$]*)\(`533078438`\),(\w+)=!1,(\w+)=e&&\3&&\5,(\w+)=([A-Za-z_$][\w$]*)\(\{hostId:([A-Za-z_$][\w$]*)\}\),(\w+)=e&&\7&&!\5,/,
-  /\{authMethod:(\w+)\}=([A-Za-z_$][\w$]*)\(\),(\w+)=([A-Za-z_$][\w$]*)\(`533078438`\),(\w+)=([A-Za-z_$][\w$]*)\(\1\),(\w+)=e&&\3&&\5,(\w+)=([A-Za-z_$][\w$]*)\(\{hostId:([A-Za-z_$][\w$]*)\}\),(\w+)=e&&\8&&!\5,/,
-  (_match, authMethodVar, authHook, flagVar, featureFlagHook, apiKeyGateVar, _apiKeyGateHook, disabledVar, availabilityVar, availabilityHook, hostIdVar, enabledVar) =>
-    `{authMethod:${authMethodVar}}=${authHook}(),${flagVar}=${featureFlagHook}(\`533078438\`),${apiKeyGateVar}=!1,${disabledVar}=e&&${flagVar}&&${apiKeyGateVar},${availabilityVar}=${availabilityHook}({hostId:${hostIdVar}}),${enabledVar}=e&&${availabilityVar}&&!${apiKeyGateVar},`
-);
+function patchOldPluginGates() {
+  rewriteFile(
+    'plugin-sidebar-gate',
+    sidebarFile,
+    /\{authMethod:(\w+)\}=([A-Za-z_$][\w$]*)\(\),(\w+)=([A-Za-z_$][\w$]*)\(`533078438`\),(\w+)=!1,(\w+)=e&&\3&&\5,(\w+)=([A-Za-z_$][\w$]*)\(\{hostId:([A-Za-z_$][\w$]*)\}\),(\w+)=e&&\7&&!\5,/,
+    /\{authMethod:(\w+)\}=([A-Za-z_$][\w$]*)\(\),(\w+)=([A-Za-z_$][\w$]*)\(`533078438`\),(\w+)=([A-Za-z_$][\w$]*)\(\1\),(\w+)=e&&\3&&\5,(\w+)=([A-Za-z_$][\w$]*)\(\{hostId:([A-Za-z_$][\w$]*)\}\),(\w+)=e&&\8&&!\5,/,
+    (_match, authMethodVar, authHook, flagVar, featureFlagHook, apiKeyGateVar, _apiKeyGateHook, disabledVar, availabilityVar, availabilityHook, hostIdVar, enabledVar) =>
+      `{authMethod:${authMethodVar}}=${authHook}(),${flagVar}=${featureFlagHook}(\`533078438\`),${apiKeyGateVar}=!1,${disabledVar}=e&&${flagVar}&&${apiKeyGateVar},${availabilityVar}=${availabilityHook}({hostId:${hostIdVar}}),${enabledVar}=e&&${availabilityVar}&&!${apiKeyGateVar},`
+  );
 
-rewriteFile(
-  'plugin-skills-page-gate',
-  skillsFile,
-  /let (\w+)=!1,(\w+),(\w+);if\(e\[(\d+)\]!==(\w+)\|\|e\[(\d+)\]!==\1\|\|e\[(\d+)\]!==(\w+)\?/,
-  /let (\w+)=(\w+),(\w+),(\w+);if\(e\[(\d+)\]!==(\w+)\|\|e\[(\d+)\]!==\1\|\|e\[(\d+)\]!==(\w+)\?/,
-  (_match, pluginAuthBlockedVar, _sourceVar, effectFnVar, effectDepsVar, slotA, deepLinkBlockedVar, slotB, slotC, toastApiVar) =>
-    `let ${pluginAuthBlockedVar}=!1,${effectFnVar},${effectDepsVar};if(e[${slotA}]!==${deepLinkBlockedVar}||e[${slotB}]!==${pluginAuthBlockedVar}||e[${slotC}]!==${toastApiVar}?`
-);
+  rewriteFile(
+    'plugin-skills-page-gate',
+    skillsFile,
+    /let (\w+)=!1,(\w+),(\w+);if\(e\[(\d+)\]!==(\w+)\|\|e\[(\d+)\]!==\1\|\|e\[(\d+)\]!==(\w+)\?/,
+    /let (\w+)=(\w+),(\w+),(\w+);if\(e\[(\d+)\]!==(\w+)\|\|e\[(\d+)\]!==\1\|\|e\[(\d+)\]!==(\w+)\?/,
+    (_match, pluginAuthBlockedVar, _sourceVar, effectFnVar, effectDepsVar, slotA, deepLinkBlockedVar, slotB, slotC, toastApiVar) =>
+      `let ${pluginAuthBlockedVar}=!1,${effectFnVar},${effectDepsVar};if(e[${slotA}]!==${deepLinkBlockedVar}||e[${slotB}]!==${pluginAuthBlockedVar}||e[${slotC}]!==${toastApiVar}?`
+  );
 
-rewriteFile(
-  'plugin-detail-gate',
-  detailFile,
-  /\{authMethod:(\w+)\}=([A-Za-z_$][\w$]*)\(\);if\(!1\)\{let (\w+);return/,
-  /\{authMethod:(\w+)\}=([A-Za-z_$][\w$]*)\(\);if\(([A-Za-z_$][\w$]*)\(\1\)\)\{let (\w+);return/,
-  (_match, authMethodVar, authHook, _isAuthBlockedHook, redirectElementVar) =>
-    `{authMethod:${authMethodVar}}=${authHook}();if(!1){let ${redirectElementVar};return`
-);
+  rewriteFile(
+    'plugin-detail-gate',
+    detailFile,
+    /\{authMethod:(\w+)\}=([A-Za-z_$][\w$]*)\(\);if\(!1\)\{let (\w+);return/,
+    /\{authMethod:(\w+)\}=([A-Za-z_$][\w$]*)\(\);if\(([A-Za-z_$][\w$]*)\(\1\)\)\{let (\w+);return/,
+    (_match, authMethodVar, authHook, _isAuthBlockedHook, redirectElementVar) =>
+      `{authMethod:${authMethodVar}}=${authHook}();if(!1){let ${redirectElementVar};return`
+  );
+}
+
+function patchPluginPageAuth(file) {
+  const text = fs.readFileSync(file, 'utf8');
+  if (!text.includes('openPluginInstall') || !text.includes('authMethod:')) {
+    process.stderr.write('plugin-page-auth-target-not-found\n');
+    process.exit(2);
+  }
+  if (/\{authMethod:\w+\}=[A-Za-z_$][\w$]*\(\),\w+=!1,/.test(text)) return;
+
+  const originalRe = /\{authMethod:(\w+)\}=([A-Za-z_$][\w$]*)\(\),(\w+)=([A-Za-z_$][\w$]*)\(\1\),/;
+  const next = text.replace(originalRe, (_match, authMethodVar, authHook, blockedVar) =>
+    `{authMethod:${authMethodVar}}=${authHook}(),${blockedVar}=!1,`
+  );
+  if (next === text) {
+    process.stderr.write('plugin-page-auth-patch-target-not-found\n');
+    process.exit(2);
+  }
+  fs.writeFileSync(file, next);
+  changed = true;
+}
+
+const oldFiles = [sidebarFile, skillsFile, detailFile];
+const oldFileCount = oldFiles.filter(hasFile).length;
+if (oldFileCount === 3) {
+  patchOldPluginGates();
+} else if (oldFileCount > 0 && !hasFile(pageAuthFile)) {
+  process.stderr.write('plugin-old-gates-incomplete\n');
+  process.exit(2);
+}
+
+if (hasFile(pageAuthFile)) {
+  patchPluginPageAuth(pageAuthFile);
+}
+
+if (oldFileCount === 0 && !hasFile(pageAuthFile)) {
+  process.stderr.write('plugin-gate-targets-not-found\n');
+  process.exit(2);
+}
 
 process.stdout.write(changed ? 'patched' : 'already-patched');
 '@
@@ -651,6 +704,13 @@ function patchRemoteControlMain(file) {
     'if(e instanceof Am)return this.sharedObjectRepository.set(`local_remote_control_client_id`,null),this.sharedObjectRepository.set(`remote_control_connections_state`,{available:!0,accessRequired:!1,authRequired:!0,clientAuthorized:!1}),sJ().warning(`load_remote_control_unauthed`,{safe:{},sensitive:{error:e}}),[];',
     'if(e instanceof Am)return this.sharedObjectRepository.set(`local_remote_control_client_id`,`codex-windows-local-fallback`),this.sharedObjectRepository.set(`remote_control_connections_state`,{available:!0,accessRequired:!1,authRequired:!1,clientAuthorized:!0}),sJ().warning(`load_remote_control_unauthed`,{safe:{fallback:`windows-safe-empty-state`},sensitive:{error:e}}),[];'
   );
+  if (after === before) {
+    after = before.replace(
+      /if\(e instanceof ([A-Za-z_$][\w$]*)\)return this\.sharedObjectRepository\.set\(`local_remote_control_client_id`,null\),this\.sharedObjectRepository\.set\(`remote_control_connections_state`,\{available:!0,accessRequired:!1,authRequired:!0,clientAuthorized:!1\}\),([A-Za-z_$][\w$]*)\(\)\.warning\(`load_remote_control_unauthed`,\{safe:\{\},sensitive:\{error:e\}\}\),\[\];/,
+      (_match, authErrorClass, loggerFn) =>
+        `if(e instanceof ${authErrorClass})return this.sharedObjectRepository.set(\`local_remote_control_client_id\`,\`codex-windows-local-fallback\`),this.sharedObjectRepository.set(\`remote_control_connections_state\`,{available:!0,accessRequired:!1,authRequired:!1,clientAuthorized:!0}),${loggerFn}().warning(\`load_remote_control_unauthed\`,{safe:{fallback:\`windows-safe-empty-state\`},sensitive:{error:e}}),[];`
+    );
+  }
 
   if (after === before &&
       !before.includes('safe:{fallback:`windows-safe-empty-state`}') &&
@@ -692,11 +752,26 @@ function Find-PatchTargets {
   $pluginSidebarTarget = Invoke-RgList $RgPath '533078438' $assetsDir | Select-Object -First 1
   $pluginSkillsTarget = Invoke-RgList $RgPath 'pluginDeepLinkAuthBlocked===!0' $assetsDir | Select-Object -First 1
   $pluginDetailTarget = Invoke-RgList $RgPath 'pluginDeepLinkAuthBlocked:!0' $assetsDir | Select-Object -First 1
-
-  foreach ($name in @('fastModeTarget', 'pluginSidebarTarget', 'pluginSkillsTarget', 'pluginDetailTarget')) {
-    if ([string]::IsNullOrWhiteSpace((Get-Variable -Name $name).Value)) {
-      Fail "could not find patch target: $name"
+  $pluginPageAuthTarget = $null
+  foreach ($candidate in (Get-ChildItem -LiteralPath $assetsDir -Filter 'plugins-page-*.js' -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)) {
+    $text = Get-Content -Raw -LiteralPath $candidate
+    if ($text.Contains('openPluginInstall') -and
+        $text.Contains('authMethod:') -and
+        (($text -match '\{authMethod:\w+\}=[A-Za-z_$][\w$]*\(\),\w+=[A-Za-z_$][\w$]*\(\w+\),') -or
+         ($text -match '\{authMethod:\w+\}=[A-Za-z_$][\w$]*\(\),\w+=!1,'))) {
+      $pluginPageAuthTarget = $candidate
+      break
     }
+  }
+
+  if ([string]::IsNullOrWhiteSpace($fastModeTarget)) {
+    Fail 'could not find patch target: fastModeTarget'
+  }
+  $oldPluginTargetsFound = -not [string]::IsNullOrWhiteSpace($pluginSidebarTarget) -and
+                           -not [string]::IsNullOrWhiteSpace($pluginSkillsTarget) -and
+                           -not [string]::IsNullOrWhiteSpace($pluginDetailTarget)
+  if (-not $oldPluginTargetsFound -and [string]::IsNullOrWhiteSpace($pluginPageAuthTarget)) {
+    Fail 'could not find plugin auth patch target in extracted assets'
   }
 
   $goalComposerTarget = $null
@@ -825,6 +900,7 @@ function Find-PatchTargets {
   Write-Log "plugin sidebar patch target: $pluginSidebarTarget"
   Write-Log "plugin skills-page patch target: $pluginSkillsTarget"
   Write-Log "plugin detail patch target: $pluginDetailTarget"
+  Write-Log "plugin page auth patch target: $pluginPageAuthTarget"
   Write-Log "goal composer patch target: $goalComposerTarget"
   Write-Log "goal slash-command patch target: $goalSlashTarget"
   Write-Log "computer-use availability patch target: $computerUseAvailabilityTarget"
@@ -838,6 +914,7 @@ function Find-PatchTargets {
     PluginSidebar = $pluginSidebarTarget
     PluginSkills = $pluginSkillsTarget
     PluginDetail = $pluginDetailTarget
+    PluginPageAuth = $pluginPageAuthTarget
     GoalComposer = $goalComposerTarget
     GoalSlash = $goalSlashTarget
     ComputerUseAvailability = $computerUseAvailabilityTarget
@@ -889,7 +966,13 @@ function Invoke-PatchAppAsar {
 
   $fast = Invoke-NodePatcher $nodePath $patchers.Fast @($targets.FastMode)
   Write-Log "fast-mode patch result: $fast"
-  $plugins = Invoke-NodePatcher $nodePath $patchers.Plugins @($targets.PluginSidebar, $targets.PluginSkills, $targets.PluginDetail)
+  $pluginArgs = @(
+    $(if ([string]::IsNullOrWhiteSpace($targets.PluginSidebar)) { '__none__' } else { [string]$targets.PluginSidebar })
+    $(if ([string]::IsNullOrWhiteSpace($targets.PluginSkills)) { '__none__' } else { [string]$targets.PluginSkills })
+    $(if ([string]::IsNullOrWhiteSpace($targets.PluginDetail)) { '__none__' } else { [string]$targets.PluginDetail })
+    $(if ([string]::IsNullOrWhiteSpace($targets.PluginPageAuth)) { '__none__' } else { [string]$targets.PluginPageAuth })
+  )
+  $plugins = Invoke-NodePatcher $nodePath $patchers.Plugins $pluginArgs
   Write-Log "plugin patch result: $plugins"
   $goal = Invoke-NodePatcher $nodePath $patchers.Goal @($targets.GoalComposer, $targets.GoalSlash)
   Write-Log "goal patch result: $goal"
