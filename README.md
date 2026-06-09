@@ -15,6 +15,7 @@
 - 刷新 Windows Computer Use 兼容文件。
 - 解除 Computer Control 页面里 `Any App` / `任意应用` 被组织或地区门控禁用的问题。
 - 修复 Codex 移动版 / 连接页远程控制设置在未授权时跳转、报错或卡住退不出的问题。
+- 启用 `features.remote_connections`，避免 Codex Mobile / Connections 入口在新版中被本地 feature gate 隐藏。
 - 在用户明确要求时，可选安装随 skill 分发的自定义 `model_instructions_file` 提示词配置。
 - 在覆盖 `config.toml` 前自动生成一次时间戳备份，降低配置误写风险。
 - 每次正式使用前自动尝试从 GitHub 同步最新版，让本地 skill 尽量保持具备处理新问题的最新工作流；网络不可用时不会强制中断。
@@ -75,6 +76,7 @@ Copy-Item -Recurse -Force -LiteralPath (Join-Path $source 'assets') -Destination
 - Computer Use 提示插件不可用、`missing-helper-path`、重启后又失效，或 Chrome/browser helper 路径、缓存、native-host 坏了：可以让当前 Codex Desktop 会话用这个 skill 修，不需要外部 agent。使用 `scripts/install-computer-use-local.ps1` 或 `scripts/install-computer-use-local.ps1 -VerifyOnly`，修完重启 Codex。
 - 插件市场配置坏了、`codex plugin list` 因 marketplace manifest 报错、本地 marketplace 缺 `.agents\plugins\marketplace.json`：可以让当前 Codex Desktop 会话用这个 skill 修，不需要外部 agent。使用 `scripts/repatch-codex-windows.ps1 -RegisterMarketplaceOnly` 或本地 marketplace 修复流程。
 - 用户明确要求安装随 skill 分发的自定义提示词配置：使用 `scripts/install-model-instructions-file.ps1`，然后重启 Codex CLI/Desktop 或开启新会话。
+- Codex Mobile / Connections 手机控制入口整个消失：通常不是功能删除，而是 `features.remote_connections` 或 Statsig 门控隐藏；运行 repatch 会写入 `remote_connections = true`。
 - Fast Mode 看不到或请求不带 `service_tier=priority`、插件入口/安装按钮灰、Computer Control 的 `Any App` 灰、Browser/Chrome/browser_use 灰、语言重启回英文、Goal 入口没了、Codex mobile/连接页设置卡登录：这些要改 Codex Desktop MSIX/ASAR，建议让其它 agent 或外部 PowerShell 跑完整 repatch，避免当前 Desktop 停止/重装自己导致会话中断。
 
 一个典型请求是：`使用 codex-windows-fast-patch 这个 skill，检查并修复这台 Windows 机器上的 Codex Desktop Fast Mode、语言/locale、Chrome browser_use、插件市场和 Computer Use 可用性问题。`
