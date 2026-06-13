@@ -281,11 +281,9 @@ function Invoke-ComputerUseInstaller {
 function Enable-ComputerUseFeature {
   $configPath = Join-Path $env:USERPROFILE '.codex\config.toml'
   Set-TomlTableValue $configPath '[features]' 'computer_use' $true
-  Set-TomlTableValue $configPath '[features]' 'remote_connections' $true
   Set-TomlTableValue $configPath '[windows]' 'sandbox' 'unelevated'
   Test-TomlSyntax $configPath
   Write-Log 'local feature enabled: features.computer_use = true'
-  Write-Log 'local feature enabled: features.remote_connections = true'
   Write-Log 'Windows sandbox mode set: windows.sandbox = unelevated'
 }
 

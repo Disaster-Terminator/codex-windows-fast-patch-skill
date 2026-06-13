@@ -12,12 +12,8 @@
 - 注册和修复本地插件市场配置。
 - 修复本地插件市场清单目录结构。
 - 解除 in-app browser、browser pane 和外部 Chrome/browser_use 在 Store 版里被本地 feature / Statsig 门控禁用的问题。
-- 刷新 Windows Computer Use 兼容文件。
+- 修复 Windows Computer Use 本地插件、运行时兼容文件和 helper 路径。
 - 解除 Computer Control 页面里 `Any App` / `任意应用` 被组织或地区门控禁用的问题。
-- 修复 Codex 移动版 / 连接页远程控制设置在未授权时跳转、报错或卡住退不出的问题。
-- 启用 `features.remote_connections`，避免 Codex Mobile / Connections 入口在新版中被本地 feature gate 隐藏。
-- 打开连接页内第二层远程控制 section gate；否则新版里可能能进入 `连接` 页面，但页面只显示 SSH 连接卡片。
-- 在新版界面中，旧的 Codex Mobile / 手机控制独立入口可能不再显示；当前入口是 `设置 -> 编码 -> 连接`，进入后再找远程控制 / Control other devices 设置。
 - 在用户明确要求时，可选安装随 skill 分发的自定义 `model_instructions_file` 提示词配置。
 - 在覆盖 `config.toml` 前自动生成一次时间戳备份，降低配置误写风险。
 - 每次正式使用前自动尝试从 GitHub 同步最新版，让本地 skill 尽量保持具备处理新问题的最新工作流；网络不可用时不会强制中断。
@@ -41,7 +37,7 @@
 - `scripts/manage-codex-backups.ps1`：本机 Codex 配置、MCP、skills 和 marketplaces 的备份管理脚本。
 - `scripts/update-skill-from-github.ps1`：使用前尽力同步 GitHub 最新版的自更新脚本。
 - `assets/system-prompt.md`：仅在用户明确要求可选提示词配置时使用的内置提示词资产。
-- `references/restriction-debug-cases.md`：限制解除、Chrome/browser_use、Computer Use、移动入口和 CPA Fast Mode 的按需诊断案例。
+- `references/restriction-debug-cases.md`：限制解除、Chrome/browser_use、Computer Use 和 CPA Fast Mode 的按需诊断案例。
 
 ## 安装
 
@@ -78,8 +74,7 @@ Copy-Item -Recurse -Force -LiteralPath (Join-Path $source 'assets') -Destination
 - Computer Use 提示插件不可用、`missing-helper-path`、重启后又失效，或 Chrome/browser helper 路径、缓存、native-host 坏了：可以让当前 Codex Desktop 会话用这个 skill 修，不需要外部 agent。使用 `scripts/install-computer-use-local.ps1` 或 `scripts/install-computer-use-local.ps1 -VerifyOnly`，修完重启 Codex。
 - 插件市场配置坏了、`codex plugin list` 因 marketplace manifest 报错、本地 marketplace 缺 `.agents\plugins\marketplace.json`：可以让当前 Codex Desktop 会话用这个 skill 修，不需要外部 agent。使用 `scripts/repatch-codex-windows.ps1 -RegisterMarketplaceOnly` 或本地 marketplace 修复流程。
 - 用户明确要求安装随 skill 分发的自定义提示词配置：使用 `scripts/install-model-instructions-file.ps1`，然后重启 Codex CLI/Desktop 或开启新会话。
-- Codex Mobile / Connections 手机控制入口整个消失：通常不是功能删除，而是 `features.remote_connections` 或 Statsig 门控隐藏；运行 repatch 会写入 `remote_connections = true`。如果能打开 `连接` 页面但只看见 SSH 卡片，则是第二层远程控制 section gate 还没打开。在 26.602.9276 一类新版界面中，入口文案可能只是 `设置 -> 编码 -> 连接`，不是旧的独立“Codex Mobile / 手机控制”名称。
-- Fast Mode 看不到或请求不带 `service_tier=priority`、插件入口/安装按钮灰、Computer Control 的 `Any App` 灰、Browser/Chrome/browser_use 灰、语言重启回英文、Goal 入口没了、Codex mobile/连接页设置卡登录：这些要改 Codex Desktop MSIX/ASAR，建议让其它 agent 或外部 PowerShell 跑完整 repatch，避免当前 Desktop 停止/重装自己导致会话中断。
+- Fast Mode 看不到或请求不带 `service_tier=priority`、插件入口/安装按钮灰、Computer Control 的 `Any App` 灰、Browser/Chrome/browser_use 灰、语言重启回英文、Goal 入口没了：这些要改 Codex Desktop MSIX/ASAR，建议让其它 agent 或外部 PowerShell 跑完整 repatch，避免当前 Desktop 停止/重装自己导致会话中断。
 
 一个典型请求是：`使用 codex-windows-fast-patch 这个 skill，检查并修复这台 Windows 机器上的 Codex Desktop Fast Mode、语言/locale、Chrome browser_use、插件市场和 Computer Use 可用性问题。`
 

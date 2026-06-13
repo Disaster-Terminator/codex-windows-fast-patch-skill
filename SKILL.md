@@ -1,11 +1,11 @@
 ---
 name: codex-windows-fast-patch
-description: Reapply the Windows Codex Desktop MSIX patch after Store upgrades, including Fast Mode request/UI gates, locale i18n, plugin UI gates, Chrome/browser_use gates, Goal command gates, Windows Computer Use availability gates, ASAR integrity repair, signing/installing the patched package, SDK cleanup, Fast Mode wire verification, registering the local plugin marketplace openai-curated-local, and optional custom model_instructions_file setup from a bundled prompt asset.
+description: Reapply the Windows Codex Desktop MSIX patch after Store upgrades, including Fast Mode request/UI gates, locale i18n, plugin UI gates, Chrome/browser_use gates, Goal command gates, Windows Computer Use availability gates and plugin/runtime repair, ASAR integrity repair, signing/installing the patched package, SDK cleanup, Fast Mode wire verification, registering the local plugin marketplace openai-curated-local, and optional custom model_instructions_file setup from a bundled prompt asset.
 ---
 
 # Codex Windows Fast Patch
 
-Use this skill when the user says Codex Desktop was upgraded and the Fast Mode / Plugins / Goal patch disappeared, asks to repatch Codex on Windows, asks to verify whether Fast Mode is really being sent, asks to restore/register the local plugin marketplace, or asks to enable Chrome browser use or Windows Computer Use in Codex Desktop. Also use it when the language/locale setting reverts after restart, browser or plugin entries are hidden by availability gates, the Computer Control settings page shows "Any App" / "任意应用" as disabled by organization or unavailable in the current region, the Connections / Codex mobile remote-control setup flow drops into an auth error loop on Windows, or the user explicitly asks to configure the bundled custom `model_instructions_file` prompt asset.
+Use this skill when the user says Codex Desktop was upgraded and the Fast Mode / Plugins / Goal patch disappeared, asks to repatch Codex on Windows, asks to verify whether Fast Mode is really being sent, asks to restore/register the local plugin marketplace, or asks to enable Chrome browser use or Windows Computer Use in Codex Desktop. Also use it when the language/locale setting reverts after restart, browser or plugin entries are hidden by availability gates, the Computer Control settings page shows "Any App" / "任意应用" as disabled by organization or unavailable in the current region, a Computer Use task reports native pipe, bundled plugin cache, helper path, package import, or runtime initialization errors, or the user explicitly asks to configure the bundled custom `model_instructions_file` prompt asset.
 
 ## Platform Compatibility
 
@@ -23,7 +23,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\ski
 
 The helper checks `chen0416ccc-cpu/codex-windows-fast-patch-skill` on GitHub and synchronizes only the skill allowlist: `SKILL.md`, `agents`, `scripts`, `references`, and `assets`. 如果无法更新到最新版，则不要中断当前任务；继续使用本机已安装的当前版本完成工作，并在结果中说明未能更新。
 
-If the normal workflow does not explain a restriction, plugin gate, Computer Use failure, or Codex mobile entry failure, read `references/restriction-debug-cases.md` before editing scripts or repatching.
+If the normal workflow does not explain a restriction, plugin gate, Computer Use failure, browser_use failure, or Fast Mode failure, read `references/restriction-debug-cases.md` before editing scripts or repatching.
 
 ## Config Backup Rule
 
@@ -44,6 +44,15 @@ if (Test-Path -LiteralPath $config -PathType Leaf) {
 
 Do not proceed with a config write if the backup of an existing config fails. After writing, validate TOML syntax with `tomllib` when Python is available.
 
+## Workflow Selection
+
+Before choosing the full MSIX repack path, identify whether the current failure is a Desktop bundle gate or a local plugin/runtime repair.
+
+- Use the full repatch workflow for Fast Mode, locale, plugin UI gates, browser_use Desktop gates, Goal gates, ASAR integrity, and settings/UI availability gates.
+- Use the Computer Use Only workflow first when the visible failure is a Computer Use task/runtime problem: native pipe unavailable, missing helper path, bundled plugin cache drift, Chrome/browser cache link drift, stale `SKY_CUA_NATIVE_PIPE` config, `@oai/sky` import errors, or `setupComputerUseRuntime` import failure.
+- Do not infer that a new `resources\codex.exe` PE file means `app.asar` is gone or that Computer Use needs binary patching. Inspect the current package resources first. If `app.asar` still exists and the symptom is a plugin/runtime import or cache failure, run `scripts\install-computer-use-local.ps1` before considering MSIX or binary changes.
+- After a Computer Use-only repair, always run `scripts\install-computer-use-local.ps1 -StrictVerifyOnly`. Treat `client import ok` plus `helper transport ok` as the local repair success signal.
+
 ## Default Workflow
 
 1. If the task may modify `config.toml`, skills, marketplaces, or MCP server settings, create a state snapshot first:
@@ -58,7 +67,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\ski
 Get-AppxPackage -Name OpenAI.Codex | Select-Object Name,PackageFullName,Version,SignatureKind,InstallLocation
 ```
 
-3. Run a dry run first after every Codex upgrade:
+3. If Workflow Selection points to a Computer Use-only failure, skip the MSIX dry run and go directly to the Computer Use Only section. Otherwise, run a dry run first after every Codex upgrade:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\skills\codex-windows-fast-patch\scripts\repatch-codex-windows.ps1" -DryRun
@@ -85,12 +94,8 @@ It patches Fast Mode in both the request path and the settings UI path. The requ
 It patches the locale i18n gate that can force the Desktop UI back to English after restart when `enable_i18n` is disabled in the shipped webview bundle.
 It patches Chrome/browser_use gates in both the webview assets and the main Electron feature sender/receiver path, covering in-app browser, browser pane, and external browser availability. This only unlocks the local Desktop gates; Chrome extension and native messaging files still need to exist and should be verified separately.
 It also patches the Desktop webview gates that otherwise hide or disable Windows Computer Use behind the `computer_use` experimental feature and Statsig gate `1506311413`, and it writes `features.computer_use = true` into `$env:USERPROFILE\.codex\config.toml` without replacing the rest of the `[features]` table.
-It also writes `features.remote_connections = true` so the Connections / Codex Mobile remote-control routes are not hidden behind the `remote_connections` feature gate or Statsig gate `4114442250`.
-It also patches the second-layer Connections settings section gate that can leave the page visible but only show SSH connections. In 26.602.9276-era builds this lives in `webview\assets\remote-connection-visibility-*.js` as Statsig gate `1042620455`.
-In newer Windows UI builds, this may not restore an old standalone "Codex Mobile" sidebar label. Treat `Settings -> Coding -> Connections` (Chinese UI: `设置 -> 编码 -> 连接`) as the current remote-control entry, then look for the remote-control / Control other devices setup inside that page.
 It also writes `[windows] sandbox = "unelevated"` into `$env:USERPROFILE\.codex\config.toml`. On Windows, this avoids the elevated sandbox setup refresh path that can fail with `spawn setup refresh` / OS error 740 and break Computer Use startup.
 It also repairs local marketplace manifest layout when a local root has only a legacy root `marketplace.json`; the current Codex CLI expects `.agents\plugins\marketplace.json`, and missing that file can make `codex plugin list` fail for all configured marketplaces.
-It also patches the Codex mobile / remote-control setup flow so a missing ChatGPT Desktop remote-control auth token does not force the settings modal to navigate to `/login` and become hard to exit; the flow falls back to a safe empty state instead. This does not replace real server-side remote-control enrollment when cross-device control is actually required.
 It does not install the bundled custom `model_instructions_file` prompt by default. Only install it when the user explicitly requests that optional configuration.
 Any bundled script write to an existing `config.toml` first creates one timestamped backup for that script run under `.codex\backups\config\`.
 
@@ -125,14 +130,11 @@ Remove-Item Env:ELECTRON_ENABLE_LOGGING -ErrorAction SilentlyContinue
 - In Codex 26.519.11010+, `use-plugin-install-flow-*.js` may no longer contain `featureName:\`computer_use\``. For the Computer Use install-flow gate, locate the file with `installPlugin:async` and `openPluginInstall`, then patch the imported availability tuple so the first `.available` value for Computer Use is forced true.
 - Do not modify `C:\Program Files\WindowsApps` in place to enable Computer Use. The Windows gate is controlled by `CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE=1`, and the helper paths are supplied through the local `computer-use@openai-bundled` plugin.
 - If Computer Use or a `node_repl` Computer Use plugin fails on Windows with `windows sandbox failed: spawn setup refresh`, inspect `$env:USERPROFILE\.codex\.sandbox\sandbox.<date>.log`. If it shows `codex-windows-sandbox-setup.exe` failing with OS error 740, set `[windows] sandbox = "unelevated"`. Check `codex sandbox --help` before verification: if the help lists a `windows` command, verify with `codex sandbox windows "C:\Windows\System32\cmd.exe" /c echo OK`; only builds whose help accepts a direct command form should use `codex sandbox "C:\Windows\System32\cmd.exe" /c echo OK`.
+- If a Computer Use task fails before app interaction with `Package subpath ... is not defined by "exports"`, `Module not found: @oai/sky`, missing `setupComputerUseRuntime`, or an internal `@oai/sky` / `computer_use_client_base` import path error, treat it as local bundled plugin/runtime drift. Run `scripts\install-computer-use-local.ps1 -VerifyOnly`, then `-StrictVerifyOnly`. Do not patch `app.asar` or `resources\codex.exe` for this class unless Desktop logs also prove a UI availability gate is still closed.
 - If "任意应用" is visible but disabled as organization/region unavailable, inspect `webview\assets\use-is-plugins-enabled-*.js` in the extracted ASAR. The relevant local gates are `featureName:\`computer_use\`` and Statsig `1506311413`; reapply the MSIX patch rather than editing WindowsApps in place.
-- If the Codex Mobile / Connections remote-control UI entry disappears entirely after an update, inspect `webview\assets\remote-connection-visibility-*.js`. In 26.602.9276-era builds the route is still present but hidden unless `features.remote_connections = true` or Statsig `4114442250` is enabled. If `Settings -> Coding -> Connections` opens but only shows SSH cards, the second-layer remote-control section gate `1042620455` is still closed. After the gates are open, do not expect an old standalone "Codex Mobile" label; the visible Settings sidebar entry is `Connections` / `连接` under the Coding / 编码 group.
 - If the Computer Control page says `Computer Use 插件不可用`, check the Desktop log for `computer-use native pipe startup failed` with `missing-helper-path`, then inspect `$env:USERPROFILE\.codex\.tmp\bundled-marketplaces\openai-bundled\.agents\plugins\marketplace.json` and `plugins\computer-use`. If they are missing or partial, stop bundled `extension-host` processes under `$env:USERPROFILE\.codex\plugins\cache\openai-bundled`, rerun `scripts\install-computer-use-local.ps1`, restart Codex Desktop, and confirm the log ends with `computer-use native pipe startup ready`.
 - If `scripts\install-computer-use-local.ps1 -StrictVerifyOnly` fails because `$env:USERPROFILE\.codex\plugins\cache\openai-bundled\computer-use\latest\.codex-plugin\plugin.json` is missing, run the same script with `-VerifyOnly` to repair the marketplace mirror, cached plugin copy, and `latest` link, then rerun `-StrictVerifyOnly`.
 - If the failure reappears after fully quitting and reopening Codex Desktop, inspect `$env:USERPROFILE\.codex\chrome-native-hosts.json` and the real targets of `$env:USERPROFILE\.codex\plugins\cache\openai-bundled\chrome\latest` and `browser\latest`. Stale Chrome native-host entries, or a `chrome\latest` junction that points at `$env:USERPROFILE\.codex\.tmp\bundled-marketplaces\openai-bundled\plugins\chrome`, can let Chrome native messaging lock the mutable marketplace mirror. The symptom is `bundled_plugins_marketplace_resolve_failed` with `EBUSY` on `plugins\chrome\extension-host\windows\x64`, followed by `helper paths changed` and `missing-helper-path`; rerun `scripts\install-computer-use-local.ps1` to stop the lock holder, rebuild stable browser/chrome cache copies, repoint the Chrome native messaging manifest to the stable cache path, and repair Computer Use.
-- If the "Codex mobile" / "Codex 移动版" entry or Connections > Control This Computer > Set up opens then drops back, opens nothing, routes to login, or becomes hard to exit, check the Desktop logs under `%LOCALAPPDATA%\Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\Local\Codex\Logs\<year>\<month>\<day>`. `load_remote_control_unauthed` or `refresh_local_remote_control_client_id_failed` with `Sign in to ChatGPT in Codex Desktop` means the local patch should prevent the UI loop, but real cross-device remote-control enrollment still requires a ChatGPT Desktop sign-in, not only an API-key Codex login. When patching `.vite\build\main-*.js`, match the unauth branch by behavior (`local_remote_control_client_id=null`, `authRequired:!0`, `clientAuthorized:!1`, `load_remote_control_unauthed`) rather than fixed minified class or logger names.
-
-- In Codex 26.602.3474-era builds, `webview\assets\codex-mobile-setup-flow-*.js` may be absent while the `.vite\build\main-*.js` remote-control unauth branch is still present. Treat only that setup-flow chunk as not applicable for that build: log the missing target and pass `__none__` to the Computer Use gate patcher, but keep the other repair target checks strict.
 
 ## Useful Wrapper Options
 
@@ -180,6 +182,8 @@ After configuring `model_instructions_file`, restart Codex CLI/Desktop or start 
 
 ## Computer Use Only
 
+Use this path for local Computer Use plugin/runtime repair without repacking the MSIX. It rebuilds the local `openai-bundled` marketplace mirror, repairs stable `computer-use` / `browser` / `chrome` cache links, overlays the installed CUA `@oai/sky` runtime into the local Computer Use plugin, patches the Computer Use client import shape when needed, removes stale `SKY_CUA_NATIVE_PIPE` overrides from `config.toml`, updates the Chrome native messaging host to stable cache paths, and verifies both the client import and helper transport.
+
 To refresh only the local Windows Computer Use files and environment gate:
 
 ```powershell
@@ -197,6 +201,8 @@ To verify without changing files:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\skills\codex-windows-fast-patch\scripts\install-computer-use-local.ps1" -StrictVerifyOnly
 ```
+
+If `-StrictVerifyOnly` fails because a cache path is missing or stale, run `-VerifyOnly` once, then rerun `-StrictVerifyOnly`. If `-VerifyOnly` succeeds but Desktop still reports native pipe unavailable, restart Codex Desktop and inspect the newest Desktop log for `computer-use native pipe startup ready`.
 
 ## Backup Management
 
@@ -230,11 +236,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\ski
 - `codex plugin list` shows `computer-use@openai-bundled` as `installed, enabled`.
 - If Chrome/browser use is required, `codex plugin list` shows `chrome@openai-bundled` and `browser@openai-bundled` as `installed, enabled`, the Chrome native messaging host manifest points to a stable cache path under `$env:USERPROFILE\.codex\plugins\cache\openai-bundled\chrome\<version>\...` rather than `chrome\latest` or `.tmp\bundled-marketplaces`, `chrome\latest` and `browser\latest` point to stable cache version directories rather than the mutable marketplace mirror, and a smoke test can read a controlled tab title such as `Example Domain`.
 - `CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE` is set to `1` for the current user.
-- `$env:USERPROFILE\.codex\config.toml` contains `[features]` with `computer_use = true` and `remote_connections = true`.
+- `$env:USERPROFILE\.codex\config.toml` contains `[features]` with `computer_use = true`.
 - `$env:USERPROFILE\.codex\config.toml` contains `[windows]` with `sandbox = "unelevated"`, and the sandbox command syntax shown by `codex sandbox --help` succeeds.
 - `$env:USERPROFILE\.codex\plugins\cache\openai-bundled\computer-use\latest\node_modules\@oai\sky\dist\project\cua\sky_js\src\targets\windows\internal\helper_transport.js` exists and can return screen info/screenshot.
+- `scripts\install-computer-use-local.ps1 -StrictVerifyOnly` logs `client import ok` and `helper transport ok`.
 - The patched ASAR has `webview\assets\use-is-plugins-enabled-*.js` with the Computer Use availability gate forced local-available and `webview\assets\use-plugin-install-flow-*.js` with the Computer Use install gate unblocked.
 - The patched ASAR has `webview\assets\use-service-tier-settings-*.js` with the Fast Mode UI gate unblocked, the locale chunk with `enable_i18n` forced enabled, and browser_use feature chunks/main feature dispatch patched to report in-app and external browser availability locally.
-- The patched ASAR has `webview\assets\remote-connection-visibility-*.js` with both the Connections route gate and the remote-control settings section gate unblocked, so `Settings -> Coding -> Connections` should show more than the SSH-only card.
-- The patched ASAR has `webview\assets\codex-mobile-setup-flow-*.js` keeping ChatGPT auth failures inside a closable setup flow, and `.vite\build\main-*.js` maps remote-control unauthenticated state to a safe empty state instead of an auth loop.
 - `makeappx.exe` and `signtool.exe` are missing again if SDK cleanup was enabled.

@@ -1245,8 +1245,6 @@ function Test-ComputerUse {
     (Join-Path $chromePluginRoot '.codex-plugin\plugin.json'),
     (Join-Path $cacheLatest '.codex-plugin\plugin.json'),
     $computerUseClientPath,
-    (Join-Path $browserCacheLatest '.codex-plugin\plugin.json'),
-    (Join-Path $chromeCacheLatest '.codex-plugin\plugin.json'),
     (Join-Path $browserCacheVersionRoot '.codex-plugin\plugin.json'),
     (Join-Path $chromeCacheVersionRoot '.codex-plugin\plugin.json'),
     $chromeHostPath,
@@ -1262,7 +1260,16 @@ function Test-ComputerUse {
     }
   }
 
-  foreach ($latestPath in @($cacheLatest, $browserCacheLatest, $chromeCacheLatest)) {
+  $latestPathsToCheck = @($cacheLatest)
+  foreach ($optionalLatestPath in @($browserCacheLatest, $chromeCacheLatest)) {
+    if (Test-Path -LiteralPath $optionalLatestPath) {
+      $latestPathsToCheck += $optionalLatestPath
+    } else {
+      Write-Log "warning: bundled plugin latest junction not present; using versioned cache path: $optionalLatestPath"
+    }
+  }
+
+  foreach ($latestPath in $latestPathsToCheck) {
     $item = Get-Item -LiteralPath $latestPath -Force
     if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) {
       throw "bundled plugin latest path is not a junction: $latestPath"
