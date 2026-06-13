@@ -1410,100 +1410,10 @@ function Get-ManifestPublisher {
   return $manifest.Package.Identity.Publisher
 }
 
-function Test-CodeSigningCertificate {
-  param([System.Security.Cryptography.X509Certificates.X509Certificate2]$Cert)
-  if (-not $Cert.HasPrivateKey) {
-    return $false
-  }
-  if ($Cert.NotAfter -lt (Get-Date)) {
-    return $false
-  }
-  $codeSigningOid = '1.3.6.1.5.5.7.3.3'
-  $ekuExtension = $Cert.Extensions |
-    Where-Object { $_.Oid.Value -eq '2.5.29.37' } |
-    Select-Object -First 1
-  if (-not $ekuExtension) {
-    return $true
-  }
-  $enhancedKeyUsage = [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]$ekuExtension
-  foreach ($oid in $enhancedKeyUsage.EnhancedKeyUsages) {
-    if ($oid.Value -eq $codeSigningOid) {
-      return $true
-    }
-  }
-  return $false
-}
-
-function Get-CurrentUserMyCertificates {
-  $store = [System.Security.Cryptography.X509Certificates.X509Store]::new(
-    [System.Security.Cryptography.X509Certificates.StoreName]::My,
-    [System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
-  )
-  try {
-    $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
-    return @($store.Certificates)
-  } finally {
-    $store.Close()
-  }
-}
-
-function Add-CertificateToStore {
-  param(
-    [System.Security.Cryptography.X509Certificates.X509Certificate2]$Cert,
-    [System.Security.Cryptography.X509Certificates.StoreName]$StoreName,
-    [System.Security.Cryptography.X509Certificates.StoreLocation]$StoreLocation
-  )
-  $store = [System.Security.Cryptography.X509Certificates.X509Store]::new($StoreName, $StoreLocation)
-  try {
-    $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-    $store.Add($Cert)
-  } finally {
-    $store.Close()
-  }
-}
-
-function New-CodeSigningCertificateWithDotNet {
-  param([string]$Publisher)
-  $rsa = [System.Security.Cryptography.RSA]::Create(2048)
-  try {
-    $hash = [System.Security.Cryptography.HashAlgorithmName]::SHA256
-    $padding = [System.Security.Cryptography.RSASignaturePadding]::Pkcs1
-    $request = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new($Publisher, $rsa, $hash, $padding)
-    $request.CertificateExtensions.Add(
-      [System.Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new(
-        [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::DigitalSignature,
-        $true
-      )
-    )
-    $codeSigningOid = [System.Security.Cryptography.Oid]::new('1.3.6.1.5.5.7.3.3', 'Code Signing')
-    $ekuOids = [System.Security.Cryptography.OidCollection]::new()
-    [void]$ekuOids.Add($codeSigningOid)
-    $request.CertificateExtensions.Add(
-      [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]::new($ekuOids, $true)
-    )
-    $notBefore = [System.DateTimeOffset]::Now.AddMinutes(-5)
-    $notAfter = [System.DateTimeOffset]::Now.AddYears(5)
-    $cert = $request.CreateSelfSigned($notBefore, $notAfter)
-    $password = [System.Guid]::NewGuid().ToString('N')
-    $pfxBytes = $cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx, $password)
-    $flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::UserKeySet -bor
-      [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet -bor
-      [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
-    $persistedCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($pfxBytes, $password, $flags)
-    Add-CertificateToStore $persistedCert ([System.Security.Cryptography.X509Certificates.StoreName]::My) ([System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser)
-    return $persistedCert
-  } catch {
-    if ($rsa) {
-      $rsa.Dispose()
-    }
-    throw
-  }
-}
-
 function Get-OrCreateSigningCertificate {
   param([string]$Publisher)
-  $cert = Get-CurrentUserMyCertificates |
-    Where-Object { $_.Subject -eq $Publisher -and (Test-CodeSigningCertificate $_) } |
+  $cert = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert -ErrorAction SilentlyContinue |
+    Where-Object { $_.Subject -eq $Publisher } |
     Sort-Object NotAfter -Descending |
     Select-Object -First 1
   if ($cert) {
@@ -1511,28 +1421,18 @@ function Get-OrCreateSigningCertificate {
     return $cert
   }
   Write-Log "creating signing certificate: $Publisher"
-  try {
-    return New-SelfSignedCertificate -Type CodeSigningCert -Subject $Publisher -NotAfter (Get-Date).AddYears(5) -ErrorAction Stop
-  } catch {
-    Write-Log "warning: New-SelfSignedCertificate failed, falling back to .NET certificate creation: $($_.Exception.Message)"
-    return New-CodeSigningCertificateWithDotNet $Publisher
-  }
+  return New-SelfSignedCertificate -Type CodeSigningCert -Subject $Publisher -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddYears(5)
 }
 
 function Trust-SigningCertificate {
   param([System.Security.Cryptography.X509Certificates.X509Certificate2]$Cert)
   $tempCert = Join-Path $env:TEMP ('codex-msix-signing-' + $Cert.Thumbprint + '.cer')
-  try {
-    [System.IO.File]::WriteAllBytes($tempCert, $Cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert))
-    Add-CertificateToStore $Cert ([System.Security.Cryptography.X509Certificates.StoreName]::TrustedPeople) ([System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser)
-    Add-CertificateToStore $Cert ([System.Security.Cryptography.X509Certificates.StoreName]::Root) ([System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser)
-    if (Test-IsAdministrator) {
-      Add-CertificateToStore $Cert ([System.Security.Cryptography.X509Certificates.StoreName]::TrustedPeople) ([System.Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine)
-      Add-CertificateToStore $Cert ([System.Security.Cryptography.X509Certificates.StoreName]::Root) ([System.Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine)
-    }
-  } finally {
-    Remove-Item -LiteralPath $tempCert -Force -ErrorAction SilentlyContinue
+  Export-Certificate -Cert $Cert -FilePath $tempCert -Force | Out-Null
+  Import-Certificate -FilePath $tempCert -CertStoreLocation Cert:\CurrentUser\TrustedPeople | Out-Null
+  if (Test-IsAdministrator) {
+    Import-Certificate -FilePath $tempCert -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null
   }
+  Remove-Item -LiteralPath $tempCert -Force -ErrorAction SilentlyContinue
 }
 
 function Invoke-MakeAppxPack {
