@@ -13,7 +13,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
   $OutputRoot = Join-Path $repoRoot 'artifacts\runs'
 }
-$validSteps = @('Status', 'ComputerUseStrict', 'ComputerUseRepairVerify', 'MsixDryRun')
+$validSteps = @('Status', 'Backup', 'ComputerUseStrict', 'ComputerUseRepairVerify', 'MsixDryRun', 'PatchDryRunKeepWork', 'FullRepatch', 'TrustLatestPatchedMsixSignerLocalMachine', 'RemoveCodexAppxAllUsers', 'InstallLatestPatchedMsix')
 $Steps = @(
   foreach ($step in $Steps) {
     foreach ($part in ([string]$step -split ',')) {
@@ -213,6 +213,54 @@ if ($pkg) {
         (Join-Path $PSScriptRoot 'repatch-codex-windows.ps1'),
         '-DryRun',
         '-SkipFastVerify'
+      )
+    }
+    'PatchDryRunKeepWork' {
+      $results += Invoke-TracedCommand -Name $step -FilePath 'powershell.exe' -TimeoutSeconds $MsixDryRunTimeoutSeconds -Arguments @(
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        (Join-Path $PSScriptRoot 'patch_codex_fast_mode_windows_msix.ps1'),
+        '-DryRun',
+        '-ForceRebuild',
+        '-KeepWorkDir'
+      )
+    }
+    'FullRepatch' {
+      $results += Invoke-TracedCommand -Name $step -FilePath 'powershell.exe' -TimeoutSeconds $FullRepatchTimeoutSeconds -Arguments @(
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        (Join-Path $PSScriptRoot 'repatch-codex-windows.ps1')
+      )
+    }
+    'InstallLatestPatchedMsix' {
+      $results += Invoke-TracedCommand -Name $step -FilePath 'powershell.exe' -TimeoutSeconds 600 -Arguments @(
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        (Join-Path $PSScriptRoot 'install-latest-patched-codex-msix.ps1')
+      )
+    }
+    'TrustLatestPatchedMsixSignerLocalMachine' {
+      $results += Invoke-TracedCommand -Name $step -FilePath 'powershell.exe' -TimeoutSeconds 300 -Arguments @(
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        (Join-Path $PSScriptRoot 'trust-latest-patched-msix-signer-localmachine.ps1')
+      )
+    }
+    'RemoveCodexAppxAllUsers' {
+      $results += Invoke-TracedCommand -Name $step -FilePath 'powershell.exe' -TimeoutSeconds 300 -Arguments @(
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        (Join-Path $PSScriptRoot 'remove-codex-appx-allusers.ps1')
       )
     }
   }
