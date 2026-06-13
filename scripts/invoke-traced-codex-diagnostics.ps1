@@ -251,7 +251,8 @@ if ($pkg) {
         '-ExecutionPolicy',
         'Bypass',
         '-File',
-        (Join-Path $PSScriptRoot 'trust-latest-patched-msix-signer-localmachine.ps1')
+        (Join-Path $PSScriptRoot 'trust-latest-patched-msix-signer-localmachine.ps1'),
+        '-TrustRootForAppxInstallRecovery'
       )
     }
     'RemoveCodexAppxAllUsers' {

@@ -1,6 +1,7 @@
 param(
   [string]$RepackRoot = (Join-Path $env:USERPROFILE 'Downloads\codex-msix-repack'),
-  [string]$PackageName = 'OpenAI.Codex'
+  [string]$PackageName = 'OpenAI.Codex',
+  [switch]$TrustRootForAppxInstallRecovery
 )
 
 $ErrorActionPreference = 'Stop'
@@ -52,7 +53,10 @@ if (-not $cert.Subject) {
 Write-Log "MSIX signer: $($cert.Subject) / $($cert.Thumbprint)"
 
 Add-CertificateToStore $cert ([System.Security.Cryptography.X509Certificates.StoreName]::TrustedPeople) ([System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser)
-Add-CertificateToStore $cert ([System.Security.Cryptography.X509Certificates.StoreName]::Root) ([System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser)
+if ($TrustRootForAppxInstallRecovery) {
+  Write-Log 'warning: trusting MSIX signer in CurrentUser\Root for Appx install recovery'
+  Add-CertificateToStore $cert ([System.Security.Cryptography.X509Certificates.StoreName]::Root) ([System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser)
+}
 
 Add-AppxPackage -Path $msix.FullName -ErrorAction Stop
 

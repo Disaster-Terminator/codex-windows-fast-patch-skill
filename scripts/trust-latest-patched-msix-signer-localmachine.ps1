@@ -1,5 +1,6 @@
 param(
-  [string]$RepackRoot = (Join-Path $env:USERPROFILE 'Downloads\codex-msix-repack')
+  [string]$RepackRoot = (Join-Path $env:USERPROFILE 'Downloads\codex-msix-repack'),
+  [switch]$TrustRootForAppxInstallRecovery
 )
 
 $ErrorActionPreference = 'Stop'
@@ -52,6 +53,9 @@ if (-not (Test-IsAdministrator)) {
     '-RepackRoot',
     "`"$RepackRoot`""
   )
+  if ($TrustRootForAppxInstallRecovery) {
+    $argsList += '-TrustRootForAppxInstallRecovery'
+  }
   Write-Log 'requesting elevation to trust MSIX signer in LocalMachine stores'
   $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $argsList -Verb RunAs -Wait -PassThru
   exit $proc.ExitCode
@@ -68,4 +72,7 @@ $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($m
 Write-Log "MSIX signer: $($cert.Subject) / $($cert.Thumbprint)"
 
 Add-CertificateToStore $cert ([System.Security.Cryptography.X509Certificates.StoreName]::TrustedPeople) ([System.Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine)
-Add-CertificateToStore $cert ([System.Security.Cryptography.X509Certificates.StoreName]::Root) ([System.Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine)
+if ($TrustRootForAppxInstallRecovery) {
+  Write-Log 'warning: trusting MSIX signer in LocalMachine\Root for Appx install recovery'
+  Add-CertificateToStore $cert ([System.Security.Cryptography.X509Certificates.StoreName]::Root) ([System.Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine)
+}
