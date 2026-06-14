@@ -899,14 +899,20 @@ function Sync-OpenAiBundledPluginCache {
 
   Stop-OpenAiBundledExtensionHosts @($sourcePluginRoot, $cacheRoot)
 
-  if (Test-Path -LiteralPath $cacheVersionRoot) {
-    Remove-ReparsePointOrDirectory $cacheVersionRoot
-  }
+  $cacheManifest = Join-Path $cacheVersionRoot '.codex-plugin\plugin.json'
+  if (Test-Path -LiteralPath $cacheManifest -PathType Leaf) {
+    Write-Log "using existing bundled plugin cache: $PluginName@$version"
+  } else {
+    if (Test-Path -LiteralPath $cacheVersionRoot) {
+      Write-Log "repairing existing bundled plugin cache without deletion: $PluginName@$version"
+    } else {
+      Write-Log "syncing bundled plugin cache: $PluginName@$version"
+    }
 
-  Write-Log "syncing bundled plugin cache: $PluginName@$version"
-  & robocopy.exe $sourcePluginRoot $cacheVersionRoot /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
-  if ($LASTEXITCODE -gt 7) {
-    throw "robocopy failed while caching ${PluginName} (exit code $LASTEXITCODE)"
+    & robocopy.exe $sourcePluginRoot $cacheVersionRoot /E /NFL /NDL /NJH /NJS /NP | Out-Null
+    if ($LASTEXITCODE -gt 7) {
+      throw "robocopy failed while caching ${PluginName} (exit code $LASTEXITCODE)"
+    }
   }
 
   if (Test-Path -LiteralPath $latestPath) {
