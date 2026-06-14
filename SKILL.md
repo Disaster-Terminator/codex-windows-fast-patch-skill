@@ -43,7 +43,16 @@ if (Test-Path -LiteralPath $config -PathType Leaf) {
 }
 ```
 
-Do not proceed with a config write if the backup of an existing config fails. After writing, validate TOML syntax with `tomllib` when Python is available.
+Do not proceed with a config write if the backup of an existing config fails. Bundled scripts must write `config.toml` through `scripts\config-safe-write.ps1`: reject empty content, reject NUL bytes, write to a temporary file, validate the temporary file, replace the target, then validate the final target. If an existing `config.toml` contains NUL bytes, stop normal repair and restore a known-good backup first.
+
+If Codex cannot start because `config.toml` is corrupted, use the standalone restore helper from PowerShell outside Codex:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\skills\codex-windows-fast-patch\scripts\restore-latest-codex-config-backup.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\skills\codex-windows-fast-patch\scripts\restore-latest-codex-config-backup.ps1" -Apply
+```
+
+The first command is a dry run that selects the newest valid backup under `.codex\backups\config\`. The `-Apply` command backs up the current target, removes it even if it is NUL-corrupted, and restores the selected valid backup through the same safe writer.
 
 ## Workflow Selection
 
@@ -180,6 +189,11 @@ Remove-Item Env:ELECTRON_ENABLE_LOGGING -ErrorAction SilentlyContinue
 - If the Computer Control page says `Computer Use 插件不可用`, check the Desktop log for `computer-use native pipe startup failed` with `missing-helper-path`, then inspect `$env:USERPROFILE\.codex\.tmp\bundled-marketplaces\openai-bundled\.agents\plugins\marketplace.json` and `plugins\computer-use`. If they are missing or partial, stop bundled `extension-host` processes under `$env:USERPROFILE\.codex\plugins\cache\openai-bundled`, rerun `scripts\install-computer-use-local.ps1`, restart Codex Desktop, and confirm the log ends with `computer-use native pipe startup ready`.
 - If `scripts\install-computer-use-local.ps1 -StrictVerifyOnly` fails because `$env:USERPROFILE\.codex\plugins\cache\openai-bundled\computer-use\latest\.codex-plugin\plugin.json` is missing, run the same script with `-VerifyOnly` to repair the marketplace mirror, cached plugin copy, and `latest` link, then rerun `-StrictVerifyOnly`.
 - If the failure reappears after fully quitting and reopening Codex Desktop, inspect `$env:USERPROFILE\.codex\chrome-native-hosts.json` and the real targets of `$env:USERPROFILE\.codex\plugins\cache\openai-bundled\chrome\latest` and `browser\latest`. Stale Chrome native-host entries, or a `chrome\latest` junction that points at `$env:USERPROFILE\.codex\.tmp\bundled-marketplaces\openai-bundled\plugins\chrome`, can let Chrome native messaging lock the mutable marketplace mirror. The symptom is `bundled_plugins_marketplace_resolve_failed` with `EBUSY` on `plugins\chrome\extension-host\windows\x64`, followed by `helper paths changed` and `missing-helper-path`; rerun `scripts\install-computer-use-local.ps1` to stop the lock holder, rebuild stable browser/chrome cache copies, repoint the Chrome native messaging manifest to the stable cache path, and repair Computer Use.
+- If bundled plugin manifests under `$env:USERPROFILE\.codex\.tmp\bundled-marketplaces\openai-bundled` or `$env:USERPROFILE\.codex\plugins\cache\openai-bundled` contain NUL bytes, treat the local marketplace/cache as corrupted. `scripts\install-computer-use-local.ps1 -VerifyOnly` should force-copy the installed Store package marketplace into the local mirror, repair invalid cached `.codex-plugin\plugin.json` files from the source package, rebuild `latest` junctions, and then rerun `-StrictVerifyOnly`.
+- If Computer Use initialization fails with `Package subpath './dist/project/cua/sky_js/src/targets/windows/internal/computer_use_client_base.js' is not defined by "exports"`, the file may exist while the runtime `@oai/sky\package.json` does not export that internal subpath. Run `scripts\install-computer-use-local.ps1 -VerifyOnly`; it backs up the runtime package manifest, adds the exact export, verifies it with the runtime `node.exe`, and then verifies the local helper transport.
+- If the "Codex mobile" / "Codex 移动版" entry or Connections > Control This Computer > Set up opens then drops back, opens nothing, routes to login, or becomes hard to exit, check the Desktop logs under `%LOCALAPPDATA%\Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\Local\Codex\Logs\<year>\<month>\<day>`. `load_remote_control_unauthed` or `refresh_local_remote_control_client_id_failed` with `Sign in to ChatGPT in Codex Desktop` means the local patch should prevent the UI loop, but real cross-device remote-control enrollment still requires a ChatGPT Desktop sign-in, not only an API-key Codex login. When patching `.vite\build\main-*.js`, match the unauth branch by behavior (`local_remote_control_client_id=null`, `authRequired:!0`, `clientAuthorized:!1`, `load_remote_control_unauthed`) rather than fixed minified class or logger names.
+
+- In Codex 26.602.3474-era builds, `webview\assets\codex-mobile-setup-flow-*.js` may be absent while the `.vite\build\main-*.js` remote-control unauth branch is still present. Treat only that setup-flow chunk as not applicable for that build: log the missing target and pass `__none__` to the Computer Use gate patcher, but keep the other repair target checks strict.
 
 ## Useful Wrapper Options
 
