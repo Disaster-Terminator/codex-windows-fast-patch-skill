@@ -10,6 +10,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $LogPrefix = '[codex-model-instructions]'
 $ScriptRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+. (Join-Path $ScriptRoot 'config-safe-write.ps1')
 
 function Write-Log {
   param([string]$Message)
@@ -101,7 +102,7 @@ function Set-TomlTopLevelString {
   }
 
   Backup-ConfigBeforeOverwrite $Path "set-$Key"
-  Write-Utf8NoBom $Path ($prefix + $suffix)
+  Write-CodexConfigTomlSafely -Path $Path -Content ($prefix + $suffix)
 }
 
 function Get-TomlTopLevelString {

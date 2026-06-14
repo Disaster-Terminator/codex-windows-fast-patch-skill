@@ -10,6 +10,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $LogPrefix = '[codex-computer-use-local]'
 $script:ConfigBackupBeforeOverwrite = @{}
+$ScriptRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+. (Join-Path $ScriptRoot 'config-safe-write.ps1')
 
 function Write-Log {
   param([string]$Message)
@@ -63,6 +65,43 @@ function ConvertTo-JsonFile {
     [object]$Value
   )
   Write-Utf8NoBom $Path (($Value | ConvertTo-Json -Depth 30) + "`n")
+}
+
+function Test-JsonFile {
+  param([string]$Path)
+
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    throw "JSON file is missing: $Path"
+  }
+  $bytes = [System.IO.File]::ReadAllBytes($Path)
+  if ($bytes.Length -eq 0) {
+    throw "JSON file is empty: $Path"
+  }
+  if ([Array]::IndexOf($bytes, [byte]0) -ge 0) {
+    throw "JSON file contains NUL bytes: $Path"
+  }
+  $null = Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
+}
+
+function Backup-FileBeforeOverwrite {
+  param(
+    [string]$Path,
+    [string]$Reason = 'file-write'
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    return
+  }
+
+  $safeReason = ([string]$Reason -replace '[^A-Za-z0-9_.-]', '-').Trim('-')
+  if ([string]::IsNullOrWhiteSpace($safeReason)) {
+    $safeReason = 'file-write'
+  }
+
+  $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+  $backupPath = "$Path.$stamp.$safeReason.bak"
+  Copy-Item -LiteralPath $Path -Destination $backupPath -Force
+  Write-Log "backup before overwrite: $backupPath"
 }
 
 function Resolve-OrCreateDirectory {
@@ -146,7 +185,7 @@ function Set-TomlTable {
   }
 
   Backup-ConfigBeforeOverwrite $ConfigPath "set-$Header"
-  Write-Utf8NoBom $ConfigPath $content
+  Write-CodexConfigTomlSafely -Path $ConfigPath -Content $content
 }
 
 function Remove-TomlTableKeys {
@@ -190,7 +229,7 @@ function Remove-TomlTableKeys {
 
   Backup-ConfigBeforeOverwrite $ConfigPath $Reason
   $updated = $content.Remove($match.Index, $match.Length).Insert($match.Index, $rebuilt.ToString())
-  Write-Utf8NoBom $ConfigPath $updated
+  Write-CodexConfigTomlSafely -Path $ConfigPath -Content $updated
 }
 
 function Enable-UserEnvironment {
@@ -872,6 +911,7 @@ function Get-PluginVersion {
     throw "missing plugin manifest: $pluginJson"
   }
 
+  Test-JsonFile $pluginJson
   $plugin = Get-Content -Raw -LiteralPath $pluginJson | ConvertFrom-Json
   $version = [string]$plugin.version
   if ([string]::IsNullOrWhiteSpace($version)) {
@@ -900,7 +940,21 @@ function Sync-OpenAiBundledPluginCache {
   Stop-OpenAiBundledExtensionHosts @($sourcePluginRoot, $cacheRoot)
 
   $cacheManifest = Join-Path $cacheVersionRoot '.codex-plugin\plugin.json'
+  $sourceManifest = Join-Path $sourcePluginRoot '.codex-plugin\plugin.json'
+  $cacheManifestOk = $false
   if (Test-Path -LiteralPath $cacheManifest -PathType Leaf) {
+    try {
+      Test-JsonFile $cacheManifest
+      $cacheManifestOk = $true
+    } catch {
+      Write-Log "repairing invalid bundled plugin manifest: $cacheManifest ($($_.Exception.Message))"
+      New-Item -ItemType Directory -Force -Path (Split-Path -Parent $cacheManifest) | Out-Null
+      Copy-Item -LiteralPath $sourceManifest -Destination $cacheManifest -Force
+      Test-JsonFile $cacheManifest
+      $cacheManifestOk = $true
+    }
+  }
+  if ($cacheManifestOk) {
     Write-Log "using existing bundled plugin cache: $PluginName@$version"
   } else {
     if (Test-Path -LiteralPath $cacheVersionRoot) {
@@ -970,7 +1024,7 @@ function Sync-BundledMarketplaceFromInstalledApp {
   )
 
   Write-Log "syncing installed openai-bundled marketplace: $sourceRoot -> $MarketplaceRoot"
-  & robocopy.exe $sourceRoot $MarketplaceRoot /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
+  & robocopy.exe $sourceRoot $MarketplaceRoot /MIR /IS /IT /NFL /NDL /NJH /NJS /NP | Out-Null
   if ($LASTEXITCODE -gt 7) {
     throw "robocopy failed while syncing openai-bundled marketplace (exit code $LASTEXITCODE)"
   }
