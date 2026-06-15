@@ -14,10 +14,11 @@
 - 修复内置浏览器、浏览器面板、Chrome / browser_use 不可用的问题。
 - 修复 Computer Use / 电脑操控 / Any App 不可用的问题。
 - 修复 Computer Use 报 `native pipe unavailable`、`missing-helper-path`、插件缓存或 helper 路径损坏的问题。
-- 修复手机远控入口不显示、二维码一直转圈、跳 ChatGPT 登录、点允许后失败、手机提示 Codex 版本过期等问题。
+- 修复手机远控入口不显示、二维码一直转圈、跳 ChatGPT 登录、点允许后失败、手机提示 Codex 版本过期等问题。(第三方api登录态下使用原生手机远控功能)
 - 修复 Goal 入口、部分设置入口、功能按钮在更新后消失或变灰的问题。
 - 修复本地插件市场配置损坏、`codex plugin list` 报错的问题。
 - 可选备份和恢复本机 Codex 配置、技能、插件市场等关键状态。
+- 支持每次开始修复前自动将skills更新到最新版本
 
 ## 平台支持
 
