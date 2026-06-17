@@ -360,7 +360,10 @@ try {
 
   Write-Log "checking patched JS syntax"
   $mainFile = [string]$patchInfo.mainFile
-  $mobileFile = [string]$patchInfo.mobileSetupFile
+  $mobileFile = [string]$patchInfo.mobileSetupNoAuthRedirectFile
+  if ([string]::IsNullOrWhiteSpace($mobileFile)) {
+    $mobileFile = [string]$patchInfo.mobileSetupFile
+  }
   $mobileFlowFile = [string]$patchInfo.mobileSetupFlowFile
   $remoteConnectionsSettingsFile = [string]$patchInfo.remoteConnectionsSettingsFile
   if (-not (Test-Path -LiteralPath $mainFile -PathType Leaf)) {
@@ -396,6 +399,9 @@ try {
   }
   if (-not $remoteConnectionsSettingsText.Contains('remote_control_settings_force_control_this_pc_visible')) {
     Fail 'patched remote connections settings visibility marker missing'
+  }
+  if (-not $remoteConnectionsSettingsText.Contains('remote_control_settings_force_remote_control_section_visible')) {
+    Fail 'patched remote connections remote-control section visibility marker missing'
   }
   & node --check $mainFile
   if ($LASTEXITCODE -ne 0) {
@@ -453,7 +459,7 @@ try {
 
   if ($DryRun) {
     Write-Log "dry run complete; patched package root kept at: $workPackageRoot"
-    Write-Log "dry run markers: remote_control_desktop_fetch_override_used, remote_control_appserver_bh_isolated_auth_fallback, remote_control_mobile_setup_no_auth_redirect, remote_control_mobile_setup_authorize_before_enable, remote_control_settings_force_control_this_pc_visible"
+    Write-Log "dry run markers: remote_control_desktop_fetch_override_used, remote_control_appserver_bh_isolated_auth_fallback, remote_control_mobile_setup_no_auth_redirect, remote_control_mobile_setup_authorize_before_enable, remote_control_settings_force_control_this_pc_visible, remote_control_settings_force_remote_control_section_visible"
     return
   }
 

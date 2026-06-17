@@ -55,7 +55,10 @@ const mainFile = findJs("main bundle with remote-control remote-control flow", (
     text.includes("eP({desktopOriginator:this.options.desktopOriginator"))
 );
 
-const mobileSetupFile = findJs("codex mobile setup dialog bundle", (file, text) =>
+const mobileSetupNoAuthRedirectFile = findJs("codex mobile setup no-auth redirect bundle", (file, text) =>
+  (path.basename(file).startsWith("codex-mobile-setup-queries-") &&
+    text.includes("ChatGPT auth is required to load remote control environments.") &&
+    text.includes("e.status===401")) ||
   (path.basename(file).startsWith("codex-mobile-setup-dialog-") &&
     text.includes("ChatGPT auth is required to load remote control environments.")) ||
   (path.basename(file).startsWith("codex-mobile-setup-flow-") &&
@@ -256,9 +259,20 @@ function patchMobileSetup(text) {
     "e.status===401?(void\"remote_control_mobile_setup_no_auth_redirect\",new Se(`ChatGPT auth is required to load remote control environments.`))";
   const oldEffect2611 = "Y=()=>{J&&u(`/login`,{replace:!0})}";
   const newEffect2611 = "Y=()=>{J&&void\"remote_control_mobile_setup_no_auth_redirect\"}";
-  const next = text.includes(oldUi)
-    ? replaceExact(text, oldUi, newUi, "mobile setup 401 login redirect")
-    : replaceExact(text, oldEffect2611, newEffect2611, "mobile setup 401 login redirect");
+  const queryRedirectPattern =
+    /e\.status===401\?\([A-Za-z_$][\w$]*\(\),new ([A-Za-z_$][\w$]*)\(`ChatGPT auth is required to load remote control environments\.`\)\)/;
+  let next;
+  if (text.includes(oldUi)) {
+    next = replaceExact(text, oldUi, newUi, "mobile setup 401 login redirect");
+  } else if (queryRedirectPattern.test(text)) {
+    next = text.replace(
+      queryRedirectPattern,
+      (_match, ctor) =>
+        `e.status===401?(void"remote_control_mobile_setup_no_auth_redirect",new ${ctor}(\`ChatGPT auth is required to load remote control environments.\`))`
+    );
+  } else {
+    next = replaceExact(text, oldEffect2611, newEffect2611, "mobile setup 401 login redirect");
+  }
   if (next.includes(oldUi) || next.includes(oldEffect2611) || !next.includes(marker)) {
     throw new Error("mobile setup 401 redirect still present after patch");
   }
@@ -289,20 +303,35 @@ function patchMobileSetupFlow(text) {
 
 function patchRemoteConnectionsSettingsVisibility(text) {
   const marker = "remote_control_settings_force_control_this_pc_visible";
-  if (text.includes(marker)) {
-    return { text, status: "already-patched" };
-  }
+  const sectionMarker = "remote_control_settings_force_remote_control_section_visible";
+  let next = text;
+  let changed = false;
   const oldVisibility = "ye=Fe(),xe=!c,";
   const newVisibility = "ye=(void\"remote_control_settings_force_control_this_pc_visible\",!0),xe=!c,";
   const oldVisibility2611 = "We=be&&!0,";
   const newVisibility2611 = "We=(void\"remote_control_settings_force_control_this_pc_visible\",!0),";
-  const next = text.includes(oldVisibility)
-    ? replaceExact(text, oldVisibility, newVisibility, "remote connections local setup visibility")
-    : replaceExact(text, oldVisibility2611, newVisibility2611, "remote connections local setup visibility");
-  if (!next.includes(marker) || !next.includes("showControlThisMacTab")) {
+  if (!next.includes(marker)) {
+    next = next.includes(oldVisibility)
+      ? replaceExact(next, oldVisibility, newVisibility, "remote connections local setup visibility")
+      : replaceExact(next, oldVisibility2611, newVisibility2611, "remote connections local setup visibility");
+    changed = true;
+  }
+  if (!next.includes(sectionMarker)) {
+    const oldSection2611 = "be=qe(),X=!f,";
+    const newSection2611 =
+      "be=(void\"remote_control_settings_force_remote_control_section_visible\",!0),X=!f,";
+    next = replaceExact(
+      next,
+      oldSection2611,
+      newSection2611,
+      "remote connections remote-control section visibility"
+    );
+    changed = true;
+  }
+  if (!next.includes(marker) || !next.includes(sectionMarker) || !next.includes("showControlThisMacTab")) {
     throw new Error("remote connections settings visibility marker missing after patch");
   }
-  return { text: next, status: "patched" };
+  return { text: next, status: changed ? "patched" : "already-patched" };
 }
 
 let mainText = read(mainFile);
@@ -340,13 +369,13 @@ for (const marker of [
 }
 write(mainFile, mainText);
 
-let mobileText = read(mobileSetupFile);
+let mobileText = read(mobileSetupNoAuthRedirectFile);
 const mobileResult = patchMobileSetup(mobileText);
 mobileText = mobileResult.text;
 if (mobileText.includes("e.status===401?(J(),new Se(")) {
   throw new Error("mobile setup forced ChatGPT auth redirect still present");
 }
-write(mobileSetupFile, mobileText);
+write(mobileSetupNoAuthRedirectFile, mobileText);
 
 let mobileFlowText = read(mobileSetupFlowFile);
 const mobileFlowResult = patchMobileSetupFlow(mobileFlowText);
@@ -363,7 +392,7 @@ process.stdout.write(
     {
       mainFile,
       mainStatus: mainStatuses,
-      mobileSetupFile,
+      mobileSetupNoAuthRedirectFile,
       mobileStatus: mobileResult.status,
       mobileSetupFlowFile,
       mobileSetupFlowStatus: mobileFlowResult.status,

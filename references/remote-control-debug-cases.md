@@ -50,13 +50,17 @@ The ASAR patch script targets behavior, not fixed filenames. Dry-run and live pa
 - `remote_control_mobile_setup_no_auth_redirect`
 - `remote_control_mobile_setup_authorize_before_enable`
 - `remote_control_settings_force_control_this_pc_visible`
+- `remote_control_settings_force_remote_control_section_visible`
 - `remote_control_qm_start`
 - `software_device_key_async_fallback`
 
-The patched mobile setup dialog must not still contain the forced redirect shape:
+In 26.611-style bundles, the no-auth 401 redirect can live in `codex-mobile-setup-queries-*`, not only in `codex-mobile-setup-dialog-*` or `codex-mobile-setup-flow-*`. Patch behavior by finding the chunk with `ChatGPT auth is required to load remote control environments.` and the `e.status===401` branch.
+
+The patched mobile setup chunks must not still contain forced redirect shapes:
 
 ```text
 e.status===401?(J(),new Se(
+e.status===401?(v(),new C(
 ```
 
 Run `node --check` on the patched main bundle, mobile setup dialog, mobile setup flow, and remote connections settings chunk.
@@ -76,6 +80,8 @@ The native `app\resources\codex.exe` part is separate from the Electron ASAR. Th
 For 26.609-style Windows builds, the known native fixes are:
 
 - In `app-server-transport/src/transport/remote_control/auth.rs`, load isolated remote-control auth when the main app auth is API-key/non-ChatGPT. The connection bearer should prefer `remote.json`, with the enroll step-up token sourced separately from `remote-control-oauth.json` when it has `codex.remote_control.enroll` and recent MFA freshness.
+- Do not invert the `uses_codex_backend()` check in `auth.rs`. A candidate isolated auth is usable only when `auth.uses_codex_backend()` is true; accepting non-Codex-backend auth there reintroduces `remote control requires ChatGPT authentication; API key auth is not supported`.
+- Try real Codex home candidates for isolated auth: `auth_manager.codex_home()`, `CODEX_HOME`, `%USERPROFILE%\.codex`, and `%HOME%\.codex`. Log candidate paths so a future failure proves whether the native app-server looked in the actual user home.
 - In `app-server-transport/src/transport/remote_control/websocket.rs`, enable the `tungstenite` proxy feature and connect remote-control WebSockets through `HTTPS_PROXY`/`HTTP_PROXY` when set, with a local optional v2rayN fallback at `http://127.0.0.1:10808`. The fallback must be disableable with `CODEX_REMOTE_CONTROL_DISABLE_V2RAYN_PROXY_FALLBACK=1`.
 - In workspace `Cargo.toml`, make sure `env!("CARGO_PKG_VERSION")` used by server enrollment is not `0.0.0`. For the verified 26.609.41114 build, `0.140.0-alpha.2` avoided the phone-side `Codex version expired` state.
 
@@ -88,11 +94,14 @@ Do not claim a binary is fixed because it was rebuilt. Check markers in the actu
 Symptoms:
 
 - `Settings -> Connections` shows only SSH.
+- `Settings -> Connections` displays the `Control this computer` / `控制此电脑` tab, but clicking it does nothing or the content stays SSH.
+- The mobile setup page's `Manage connections` / `管理连接` link opens the Connections page on SSH instead of the local control-computer section.
 - No new remote-control log lines appear when opening the page.
 
 Action:
 
-- Patch the remote connections settings visibility gate and verify `remote_control_settings_force_control_this_pc_visible`.
+- Patch both remote connections settings gates and verify `remote_control_settings_force_control_this_pc_visible` plus `remote_control_settings_force_remote_control_section_visible`.
+- In 26.611-style settings chunks, `showControlThisMacTab` alone is insufficient. The tab normalizer in `use-plugin-install-flow-*` returns `ssh` when `showRemoteControlConnectionsSection` is false, so force the section variable too, e.g. the `be=qe(),X=!f,` shape must become section-visible before `Je({ selectedConnectionsTab, ... })` runs.
 
 ### QR Spinner Or ChatGPT Redirect
 
