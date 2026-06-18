@@ -11,6 +11,7 @@ param(
   [switch]$SkipComputerUse,
   [switch]$RegisterMarketplaceOnly,
   [switch]$ForceRebuild,
+  [string]$OutputRoot,
   [switch]$InstallModelInstructionsFile,
   [string]$ModelInstructionsSource,
   [string]$ModelInstructionsDestination = (Join-Path $env:USERPROFILE '.codex\prompts\system-prompt.md')
@@ -19,6 +20,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $LogPrefix = '[codex-windows-fast-patch]'
 $ScriptRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+. (Join-Path $ScriptRoot 'config-safe-write.ps1')
 if ([string]::IsNullOrWhiteSpace($PatchScript)) {
   $PatchScript = Join-Path $ScriptRoot 'patch_codex_fast_mode_windows_msix.ps1'
 }
@@ -144,7 +146,7 @@ function Set-TomlTable {
   }
 
   Backup-ConfigBeforeOverwrite $ConfigPath "set-$Header"
-  Write-Utf8NoBom $ConfigPath $content
+  Write-CodexConfigTomlSafely -Path $ConfigPath -Content $content
 }
 
 function Set-TomlTableValue {
@@ -197,7 +199,7 @@ function Set-TomlTableValue {
   }
 
   Backup-ConfigBeforeOverwrite $ConfigPath "set-$Header-$Key"
-  Write-Utf8NoBom $ConfigPath $content
+  Write-CodexConfigTomlSafely -Path $ConfigPath -Content $content
 }
 
 function Test-TomlSyntax {
@@ -281,11 +283,9 @@ function Invoke-ComputerUseInstaller {
 function Enable-ComputerUseFeature {
   $configPath = Join-Path $env:USERPROFILE '.codex\config.toml'
   Set-TomlTableValue $configPath '[features]' 'computer_use' $true
-  Set-TomlTableValue $configPath '[features]' 'remote_connections' $true
   Set-TomlTableValue $configPath '[windows]' 'sandbox' 'unelevated'
   Test-TomlSyntax $configPath
   Write-Log 'local feature enabled: features.computer_use = true'
-  Write-Log 'local feature enabled: features.remote_connections = true'
   Write-Log 'Windows sandbox mode set: windows.sandbox = unelevated'
 }
 
@@ -400,6 +400,10 @@ if ($DryRun) {
   if (-not $SkipFastVerify) {
     $patchArgs += '-VerifyFastModeRequest'
   }
+}
+if (-not [string]::IsNullOrWhiteSpace($OutputRoot)) {
+  $patchArgs += '-OutputRoot'
+  $patchArgs += $OutputRoot
 }
 
 Invoke-Checked 'powershell' (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PatchScript) + $patchArgs) 'Codex MSIX patch failed'

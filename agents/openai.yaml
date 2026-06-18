@@ -1,8 +1,8 @@
 interface:
   display_name: "Codex Windows Fast Patch"
-  short_description: "Repatch Windows Codex Desktop gates, local plugins, and optional model instructions."
+  short_description: "Repatch Windows Codex Desktop gates, plugins, Computer Use, and phone remote control."
   brand_color: "#2563EB"
-  default_prompt: "Use $codex-windows-fast-patch to inspect and repair Codex Desktop Fast Mode, locale, Chrome/browser_use, plugin, Computer Use gates, and optional model_instructions_file setup on Windows."
+  default_prompt: "Use $codex-windows-fast-patch to inspect and repair Codex Desktop Fast Mode, locale, Chrome/browser_use, plugin marketplace, Computer Use gates/runtime, phone remote-control setup, and optional model_instructions_file setup on Windows."
 
 policy:
   allow_implicit_invocation: true

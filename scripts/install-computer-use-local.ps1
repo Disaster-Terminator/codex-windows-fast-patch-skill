@@ -10,6 +10,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $LogPrefix = '[codex-computer-use-local]'
 $script:ConfigBackupBeforeOverwrite = @{}
+$ScriptRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+. (Join-Path $ScriptRoot 'config-safe-write.ps1')
 
 function Write-Log {
   param([string]$Message)
@@ -63,6 +65,43 @@ function ConvertTo-JsonFile {
     [object]$Value
   )
   Write-Utf8NoBom $Path (($Value | ConvertTo-Json -Depth 30) + "`n")
+}
+
+function Test-JsonFile {
+  param([string]$Path)
+
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    throw "JSON file is missing: $Path"
+  }
+  $bytes = [System.IO.File]::ReadAllBytes($Path)
+  if ($bytes.Length -eq 0) {
+    throw "JSON file is empty: $Path"
+  }
+  if ([Array]::IndexOf($bytes, [byte]0) -ge 0) {
+    throw "JSON file contains NUL bytes: $Path"
+  }
+  $null = Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
+}
+
+function Backup-FileBeforeOverwrite {
+  param(
+    [string]$Path,
+    [string]$Reason = 'file-write'
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    return
+  }
+
+  $safeReason = ([string]$Reason -replace '[^A-Za-z0-9_.-]', '-').Trim('-')
+  if ([string]::IsNullOrWhiteSpace($safeReason)) {
+    $safeReason = 'file-write'
+  }
+
+  $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+  $backupPath = "$Path.$stamp.$safeReason.bak"
+  Copy-Item -LiteralPath $Path -Destination $backupPath -Force
+  Write-Log "backup before overwrite: $backupPath"
 }
 
 function Resolve-OrCreateDirectory {
@@ -146,7 +185,51 @@ function Set-TomlTable {
   }
 
   Backup-ConfigBeforeOverwrite $ConfigPath "set-$Header"
-  Write-Utf8NoBom $ConfigPath $content
+  Write-CodexConfigTomlSafely -Path $ConfigPath -Content $content
+}
+
+function Remove-TomlTableKeys {
+  param(
+    [string]$ConfigPath,
+    [string]$Header,
+    [string[]]$Keys,
+    [string]$Reason = 'remove-table-keys'
+  )
+
+  if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf) -or $Keys.Count -eq 0) {
+    return
+  }
+
+  $content = [System.IO.File]::ReadAllText($ConfigPath, [System.Text.UTF8Encoding]::new($false))
+  $escapedHeader = [regex]::Escape($Header)
+  $pattern = "(?ms)^$escapedHeader\s*\r?\n(?:(?!^\[).)*"
+  $match = [regex]::Match($content, $pattern)
+  if (-not $match.Success) {
+    return
+  }
+
+  $keyPattern = '^\s*(?:' + (($Keys | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')\s*='
+  $lines = $match.Value -split "(\r?\n)"
+  $rebuilt = New-Object System.Text.StringBuilder
+  $changed = $false
+  for ($i = 0; $i -lt $lines.Count; $i += 2) {
+    $line = $lines[$i]
+    $newline = if ($i + 1 -lt $lines.Count) { $lines[$i + 1] } else { '' }
+    if ($line -match $keyPattern) {
+      $changed = $true
+      continue
+    }
+    [void]$rebuilt.Append($line)
+    [void]$rebuilt.Append($newline)
+  }
+
+  if (-not $changed) {
+    return
+  }
+
+  Backup-ConfigBeforeOverwrite $ConfigPath $Reason
+  $updated = $content.Remove($match.Index, $match.Length).Insert($match.Index, $rebuilt.ToString())
+  Write-CodexConfigTomlSafely -Path $ConfigPath -Content $updated
 }
 
 function Enable-UserEnvironment {
@@ -498,25 +581,101 @@ export class WindowsHelperTransport {
 '@
 }
 
+function Patch-ComputerUseClientScript {
+  param([string]$ClientPath)
+
+  if (-not (Test-Path -LiteralPath $ClientPath -PathType Leaf)) {
+    throw "Computer Use client script not found: $ClientPath"
+  }
+
+  $content = [System.IO.File]::ReadAllText($ClientPath)
+  $marker = 'computer_use_client_base_file_url_patch'
+  if ($content.Contains($marker)) {
+    return
+  }
+
+  $oldImport = 'import { WindowsComputerUseClientBase } from "@oai/sky/dist/project/cua/sky_js/src/targets/windows/internal/computer_use_client_base.js";'
+  if (-not $content.Contains($oldImport)) {
+    throw "Computer Use client import anchor not found in: $ClientPath"
+  }
+
+  $replacement = @'
+import { createRequire } from "node:module";
+import { join, sep } from "node:path";
+import { pathToFileURL } from "node:url";
+
+const require = createRequire(import.meta.url);
+const skyIndexPath = require.resolve("@oai/sky");
+const skyDistNeedle = `${sep}dist${sep}`;
+const skyDistIndex = skyIndexPath.indexOf(skyDistNeedle);
+if (skyDistIndex === -1) {
+  throw new Error(`Unable to locate @oai/sky package root from ${skyIndexPath}`);
+}
+const skyPackageRoot = skyIndexPath.slice(0, skyDistIndex);
+const { WindowsComputerUseClientBase } = await import(
+  pathToFileURL(
+    join(
+      skyPackageRoot,
+      "dist/project/cua/sky_js/src/targets/windows/internal/computer_use_client_base.js",
+    ),
+  ).href,
+);
+// computer_use_client_base_file_url_patch
+'@
+
+  Write-Utf8NoBom $ClientPath ($content.Replace($oldImport, $replacement))
+}
+
 function Write-PluginTree {
   param([string]$Root)
 
   $pluginJsonPath = Join-Path $Root '.codex-plugin\plugin.json'
   $skillPath = Join-Path $Root 'skills\computer-use\SKILL.md'
+  $clientPath = Join-Path $Root 'scripts\computer-use-client.mjs'
   $packagePath = Join-Path $Root 'node_modules\@oai\sky\package.json'
+  $skyRoot = Split-Path -Parent $packagePath
+  $distPath = Join-Path $skyRoot 'dist'
   $helperExePath = Join-Path $Root 'node_modules\@oai\sky\bin\windows\codex-computer-use.exe'
   $helperTransportPath = Join-Path $Root 'node_modules\@oai\sky\dist\project\cua\sky_js\src\targets\windows\internal\helper_transport.js'
+  $runtimeSkyRoot = Get-CuaSkyRuntimeRoot
+  $runtimeDistPath = Join-Path $runtimeSkyRoot 'dist'
+  $runtimePackagePath = Join-Path $runtimeSkyRoot 'package.json'
+  $runtimePackage = Get-Content -Raw -LiteralPath $runtimePackagePath | ConvertFrom-Json
+  $runtimeVersion = [string]$runtimePackage.version
+  if ([string]::IsNullOrWhiteSpace($runtimeVersion)) {
+    $runtimeVersion = $PluginVersion
+  }
 
-  ConvertTo-JsonFile $pluginJsonPath (Get-PluginJson)
-  Write-Utf8NoBom $skillPath ((Get-SkillMarkdown) + "`n")
+  if (-not (Test-Path -LiteralPath $pluginJsonPath -PathType Leaf)) {
+    ConvertTo-JsonFile $pluginJsonPath (Get-PluginJson)
+  }
+  if (-not (Test-Path -LiteralPath $skillPath -PathType Leaf)) {
+    Write-Utf8NoBom $skillPath ((Get-SkillMarkdown) + "`n")
+  }
+  if (-not (Test-Path -LiteralPath $clientPath -PathType Leaf)) {
+    throw "installed Computer Use client script is missing: $clientPath"
+  }
+  Patch-ComputerUseClientScript $clientPath
+
+  Resolve-OrCreateDirectory $skyRoot | Out-Null
+  if (Test-Path -LiteralPath $distPath) {
+    Remove-ReparsePointOrDirectory $distPath
+  }
+  & robocopy.exe $runtimeDistPath $distPath /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
+  if ($LASTEXITCODE -gt 7) {
+    throw "robocopy failed while overlaying Computer Use @oai/sky runtime files (exit code $LASTEXITCODE)"
+  }
+
   ConvertTo-JsonFile $packagePath ([ordered]@{
     name = '@oai/sky'
-    version = $PluginVersion
+    version = $runtimeVersion
     type = 'module'
     private = $true
+    main = 'dist/project/cua/sky_js/src/index.js'
   })
   Write-Utf8NoBom $helperExePath "# Placeholder executable path for Codex Desktop Windows Computer Use resolution.`r`n# The local helper transport module implements the actual request handling.`r`n"
   Write-Utf8NoBom $helperTransportPath ((Get-HelperTransportJs) + "`n")
+  Write-Log "overlayed Computer Use @oai/sky runtime files: $runtimeSkyRoot -> $skyRoot"
 }
 
 function Update-BundledMarketplaceManifest {
@@ -574,6 +733,10 @@ function Update-CodexConfig {
   Set-TomlTable $configPath '[windows]' @{
     sandbox = 'unelevated'
   }
+  Remove-TomlTableKeys $configPath '[mcp_servers.node_repl.env]' @(
+    'SKY_CUA_NATIVE_PIPE',
+    'SKY_CUA_NATIVE_PIPE_DIRECTORY'
+  ) 'remove-stale-computer-use-pipe-env'
 }
 
 function Test-TomlSyntax {
@@ -603,6 +766,33 @@ tomllib.loads(path.read_text(encoding="utf-8"))
   } finally {
     Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
   }
+}
+
+function Get-CuaSkyRuntimeRoot {
+  $runtimeRoot = Join-Path $env:LOCALAPPDATA 'OpenAI\Codex\runtimes\cua_node'
+  if (-not (Test-Path -LiteralPath $runtimeRoot -PathType Container)) {
+    throw "Codex CUA runtime root is missing: $runtimeRoot"
+  }
+
+  $candidates = foreach ($runtime in (Get-ChildItem -LiteralPath $runtimeRoot -Directory -ErrorAction SilentlyContinue)) {
+    $skyRoot = Join-Path $runtime.FullName 'bin\node_modules\@oai\sky'
+    $basePath = Join-Path $skyRoot 'dist\project\cua\sky_js\src\targets\windows\internal\computer_use_client_base.js'
+    $packagePath = Join-Path $skyRoot 'package.json'
+    if ((Test-Path -LiteralPath $basePath -PathType Leaf) -and (Test-Path -LiteralPath $packagePath -PathType Leaf)) {
+      $packageItem = Get-Item -LiteralPath $packagePath
+      [pscustomobject]@{
+        Path = $skyRoot
+        LastWriteTime = $packageItem.LastWriteTime
+      }
+    }
+  }
+
+  $selected = @($candidates | Sort-Object LastWriteTime -Descending | Select-Object -First 1)
+  if ($selected.Count -eq 0) {
+    throw "no usable Codex CUA @oai/sky runtime was found under $runtimeRoot"
+  }
+
+  return $selected[0].Path
 }
 
 function Get-InstalledBundledMarketplaceRoot {
@@ -721,6 +911,7 @@ function Get-PluginVersion {
     throw "missing plugin manifest: $pluginJson"
   }
 
+  Test-JsonFile $pluginJson
   $plugin = Get-Content -Raw -LiteralPath $pluginJson | ConvertFrom-Json
   $version = [string]$plugin.version
   if ([string]::IsNullOrWhiteSpace($version)) {
@@ -748,14 +939,34 @@ function Sync-OpenAiBundledPluginCache {
 
   Stop-OpenAiBundledExtensionHosts @($sourcePluginRoot, $cacheRoot)
 
-  if (Test-Path -LiteralPath $cacheVersionRoot) {
-    Remove-ReparsePointOrDirectory $cacheVersionRoot
+  $cacheManifest = Join-Path $cacheVersionRoot '.codex-plugin\plugin.json'
+  $sourceManifest = Join-Path $sourcePluginRoot '.codex-plugin\plugin.json'
+  $cacheManifestOk = $false
+  if (Test-Path -LiteralPath $cacheManifest -PathType Leaf) {
+    try {
+      Test-JsonFile $cacheManifest
+      $cacheManifestOk = $true
+    } catch {
+      Write-Log "repairing invalid bundled plugin manifest: $cacheManifest ($($_.Exception.Message))"
+      New-Item -ItemType Directory -Force -Path (Split-Path -Parent $cacheManifest) | Out-Null
+      Copy-Item -LiteralPath $sourceManifest -Destination $cacheManifest -Force
+      Test-JsonFile $cacheManifest
+      $cacheManifestOk = $true
+    }
   }
+  if ($cacheManifestOk) {
+    Write-Log "using existing bundled plugin cache: $PluginName@$version"
+  } else {
+    if (Test-Path -LiteralPath $cacheVersionRoot) {
+      Write-Log "repairing existing bundled plugin cache without deletion: $PluginName@$version"
+    } else {
+      Write-Log "syncing bundled plugin cache: $PluginName@$version"
+    }
 
-  Write-Log "syncing bundled plugin cache: $PluginName@$version"
-  & robocopy.exe $sourcePluginRoot $cacheVersionRoot /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
-  if ($LASTEXITCODE -gt 7) {
-    throw "robocopy failed while caching ${PluginName} (exit code $LASTEXITCODE)"
+    & robocopy.exe $sourcePluginRoot $cacheVersionRoot /E /NFL /NDL /NJH /NJS /NP | Out-Null
+    if ($LASTEXITCODE -gt 7) {
+      throw "robocopy failed while caching ${PluginName} (exit code $LASTEXITCODE)"
+    }
   }
 
   if (Test-Path -LiteralPath $latestPath) {
@@ -813,7 +1024,7 @@ function Sync-BundledMarketplaceFromInstalledApp {
   )
 
   Write-Log "syncing installed openai-bundled marketplace: $sourceRoot -> $MarketplaceRoot"
-  & robocopy.exe $sourceRoot $MarketplaceRoot /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
+  & robocopy.exe $sourceRoot $MarketplaceRoot /MIR /IS /IT /NFL /NDL /NJH /NJS /NP | Out-Null
   if ($LASTEXITCODE -gt 7) {
     throw "robocopy failed while syncing openai-bundled marketplace (exit code $LASTEXITCODE)"
   }
@@ -875,6 +1086,9 @@ function Test-CodexConfig {
     if ($content -notmatch '(?ms)^\[windows\]\s*\r?\n(?:(?!^\[).)*sandbox\s*=\s*[''"]unelevated[''"]') {
       throw 'config.toml is missing windows.sandbox=unelevated'
     }
+    if ($content -match '(?m)^\s*SKY_CUA_NATIVE_PIPE(?:_DIRECTORY)?\s*=') {
+      throw 'config.toml contains stale SKY_CUA_NATIVE_PIPE environment override'
+    }
     Write-Log 'warning: python not found; config source path was not semantically validated'
     return
   }
@@ -909,6 +1123,12 @@ if not isinstance(windows, dict):
     errors.append("missing [windows]")
 elif windows.get("sandbox") != "unelevated":
     errors.append('windows.sandbox must be "unelevated"')
+
+node_repl_env = data.get("mcp_servers", {}).get("node_repl", {}).get("env", {})
+if isinstance(node_repl_env, dict):
+    for key in ("SKY_CUA_NATIVE_PIPE", "SKY_CUA_NATIVE_PIPE_DIRECTORY"):
+        if key in node_repl_env:
+            errors.append(f"remove stale mcp_servers.node_repl.env.{key}")
 
 if errors:
     for error in errors:
@@ -978,40 +1198,84 @@ try {
   }
 }
 
+function Test-ComputerUseClientImport {
+  param([string]$ClientPath)
+
+  $node = Get-Command node.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $node) {
+    throw 'node.exe not found; cannot verify Computer Use client import'
+  }
+
+  $runtimeSkyRoot = Get-CuaSkyRuntimeRoot
+  $runtimeNodeModules = Split-Path -Parent (Split-Path -Parent $runtimeSkyRoot)
+  if (-not (Test-Path -LiteralPath $runtimeNodeModules -PathType Container)) {
+    throw "Unable to locate CUA runtime node_modules for import verification: $runtimeNodeModules"
+  }
+
+  $script = @'
+import { pathToFileURL } from "node:url";
+
+const mod = await import(pathToFileURL(process.argv[2]).href);
+if (typeof mod.setupComputerUseRuntime !== "function") {
+  throw new Error("setupComputerUseRuntime export is missing");
+}
+console.log(JSON.stringify({ ok: true, exports: Object.keys(mod).sort() }));
+'@
+  $temp = Join-Path $env:TEMP ('codex-computer-use-client-import-' + [guid]::NewGuid().ToString('N') + '.mjs')
+  $tempClient = Join-Path $env:TEMP ('codex-computer-use-client-copy-' + [guid]::NewGuid().ToString('N') + '.mjs')
+  $oldNodePath = [Environment]::GetEnvironmentVariable('NODE_PATH', 'Process')
+  try {
+    Write-Utf8NoBom $temp $script
+    Copy-Item -LiteralPath $ClientPath -Destination $tempClient -Force
+
+    # The Codex Node REPL resolves bare packages from runtime search roots, not
+    # from the imported plugin file's local node_modules. Verify that shape.
+    [Environment]::SetEnvironmentVariable('NODE_PATH', $runtimeNodeModules, 'Process')
+    $output = & $node.Source $temp $tempClient
+    if ($LASTEXITCODE -ne 0) {
+      throw "Computer Use client import verification failed for $ClientPath"
+    }
+    if ($output) {
+      Write-Log "client import ok: $output"
+    }
+  } finally {
+    if ($null -eq $oldNodePath) {
+      Remove-Item Env:\NODE_PATH -ErrorAction SilentlyContinue
+    } else {
+      [Environment]::SetEnvironmentVariable('NODE_PATH', $oldNodePath, 'Process')
+    }
+    Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $tempClient -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function Install-ComputerUse {
   $codexHomeResolved = Resolve-OrCreateDirectory $CodexHome
   $marketplaceRoot = Join-Path $codexHomeResolved '.tmp\bundled-marketplaces\openai-bundled'
   $pluginSourceRoot = Join-Path $marketplaceRoot 'plugins\computer-use'
   $cacheRoot = Join-Path $codexHomeResolved 'plugins\cache\openai-bundled\computer-use'
-  $cacheVersionRoot = Join-Path $cacheRoot $PluginVersion
   $latestPath = Join-Path $cacheRoot 'latest'
 
   Resolve-OrCreateDirectory $marketplaceRoot | Out-Null
   Resolve-OrCreateDirectory $cacheRoot | Out-Null
   Assert-UnderPath $pluginSourceRoot $marketplaceRoot
-  Assert-UnderPath $cacheVersionRoot $cacheRoot
   Assert-UnderPath $latestPath $cacheRoot
 
   Remove-StaleChromeNativeHostEntries
   Sync-BundledMarketplaceFromInstalledApp $marketplaceRoot
   Write-PluginTree $pluginSourceRoot
-  Write-PluginTree $cacheVersionRoot
   Update-BundledMarketplaceManifest $marketplaceRoot
   Update-CodexConfig $marketplaceRoot
   Enable-UserEnvironment
 
+  $computerUseCacheRoot = Sync-OpenAiBundledPluginCache $marketplaceRoot 'computer-use'
   $browserCacheRoot = Sync-OpenAiBundledPluginCache $marketplaceRoot 'browser'
   $chromeCacheRoot = Sync-OpenAiBundledPluginCache $marketplaceRoot 'chrome'
-
-  if (Test-Path -LiteralPath $latestPath) {
-    Remove-ReparsePointOrDirectory $latestPath
-  }
-  New-Item -ItemType Junction -Path $latestPath -Target $cacheVersionRoot | Out-Null
 
   Update-ChromeNativeMessagingManifest $chromeCacheRoot
 
   Write-Log "installed marketplace plugin: $pluginSourceRoot"
-  Write-Log "installed cached plugin: $cacheVersionRoot"
+  Write-Log "installed cached plugin: $computerUseCacheRoot"
   Write-Log "updated latest junction: $latestPath"
 }
 
@@ -1030,20 +1294,23 @@ function Test-ComputerUse {
   $chromeCacheVersionRoot = Join-Path $codexHomeResolved "plugins\cache\openai-bundled\chrome\$chromeVersion"
   $chromeNativeManifest = Join-Path $env:LOCALAPPDATA 'OpenAI\extension\com.openai.codexextension.json'
   $chromeHostPath = Join-Path $chromeCacheVersionRoot 'extension-host\windows\x64\extension-host.exe'
+  $computerUseClientPath = Join-Path $cacheLatest 'scripts\computer-use-client.mjs'
+  $computerUseBasePath = Join-Path $cacheLatest 'node_modules\@oai\sky\dist\project\cua\sky_js\src\targets\windows\internal\computer_use_client_base.js'
   $helperTransportPath = Join-Path $cacheLatest 'node_modules\@oai\sky\dist\project\cua\sky_js\src\targets\windows\internal\helper_transport.js'
   $required = @(
     $manifestPath,
     (Join-Path $marketplaceRoot 'plugins\computer-use\.codex-plugin\plugin.json'),
+    (Join-Path $marketplaceRoot 'plugins\computer-use\scripts\computer-use-client.mjs'),
     (Join-Path $browserPluginRoot '.codex-plugin\plugin.json'),
     (Join-Path $chromePluginRoot '.codex-plugin\plugin.json'),
     (Join-Path $cacheLatest '.codex-plugin\plugin.json'),
-    (Join-Path $browserCacheLatest '.codex-plugin\plugin.json'),
-    (Join-Path $chromeCacheLatest '.codex-plugin\plugin.json'),
+    $computerUseClientPath,
     (Join-Path $browserCacheVersionRoot '.codex-plugin\plugin.json'),
     (Join-Path $chromeCacheVersionRoot '.codex-plugin\plugin.json'),
     $chromeHostPath,
     (Join-Path $cacheLatest 'node_modules\@oai\sky\package.json'),
     (Join-Path $cacheLatest 'node_modules\@oai\sky\bin\windows\codex-computer-use.exe'),
+    $computerUseBasePath,
     $helperTransportPath
   )
 
@@ -1053,7 +1320,16 @@ function Test-ComputerUse {
     }
   }
 
-  foreach ($latestPath in @($browserCacheLatest, $chromeCacheLatest)) {
+  $latestPathsToCheck = @($cacheLatest)
+  foreach ($optionalLatestPath in @($browserCacheLatest, $chromeCacheLatest)) {
+    if (Test-Path -LiteralPath $optionalLatestPath) {
+      $latestPathsToCheck += $optionalLatestPath
+    } else {
+      Write-Log "warning: bundled plugin latest junction not present; using versioned cache path: $optionalLatestPath"
+    }
+  }
+
+  foreach ($latestPath in $latestPathsToCheck) {
     $item = Get-Item -LiteralPath $latestPath -Force
     if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) {
       throw "bundled plugin latest path is not a junction: $latestPath"
@@ -1088,6 +1364,7 @@ function Test-ComputerUse {
   }
 
   Test-CodexConfig (Join-Path $codexHomeResolved 'config.toml') $marketplaceRoot
+  Test-ComputerUseClientImport $computerUseClientPath
   Test-HelperTransport $helperTransportPath
   Write-Log 'verification ok'
 }

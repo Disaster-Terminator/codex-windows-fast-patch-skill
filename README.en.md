@@ -2,25 +2,23 @@
 
 Language: [中文](README.md) | English
 
-This is the public version of the `codex-windows-fast-patch` skill. It guides agents through restoring local Codex Desktop patches and feature gates after Windows Store upgrades.
+This is the public version of the `codex-windows-fast-patch` skill. It helps Agent-Skills-capable agents repair common Windows Codex Desktop features that break after Desktop updates.
 
 ## Features
 
-- Reapply the Windows MSIX patch after Codex Desktop upgrades.
-- Repair unavailable Fast Mode in both request and settings UI paths, then verify that repaired requests really send `service_tier=priority`.
-- Keep locale/i18n enabled so a configured UI language is not forced back to English only because the shipped webview bundle disables `enable_i18n`.
-- Register and repair local plugin marketplace configuration.
-- Repair local plugin marketplace manifest layout.
-- Unlock in-app browser, browser pane, and external Chrome/browser_use availability gates when the Store build disables them through local feature/Statsig checks.
-- Refresh Windows Computer Use compatibility files.
-- Unlock the Computer Control `Any App` gate when the UI reports organization or region unavailability.
-- Keep the Codex Mobile / Connections remote-control setup flow from redirecting, error-looping, or becoming hard to close when remote-control auth is missing.
-- Enable `features.remote_connections` so Codex Mobile / Connections routes are not hidden by the local feature gate in newer builds.
-- Open the second-layer remote-control section gate inside the Connections page; otherwise newer builds may show the Connections page but only render the SSH connection card.
-- In newer UI builds, the old standalone Codex Mobile / mobile-control entry may no longer be shown; the current entry is `Settings -> Coding -> Connections`, then the remote-control / Control other devices settings inside that page.
-- Optionally install a bundled custom `model_instructions_file` prompt asset when the user explicitly asks for that extra configuration.
-- Create a timestamped backup before overwriting `config.toml`, reducing the risk of accidental config loss.
-- Before each substantive use, automatically try syncing the latest workflow from GitHub so the local skill stays ready for newly discovered issues; network failures do not block the repair.
+Use this skill when Windows Codex Desktop updates cause issues like these:
+
+- Repair Fast Mode / Priority Mode when it is hidden, disabled, or does not actually take effect.
+- Repair the UI language resetting to English after restart.
+- Repair plugin entries, plugin install buttons, and plugin marketplace lists.
+- Repair the in-app browser, browser pane, Chrome, or browser_use when they are unavailable.
+- Repair Computer Use / computer control / Any App when it is unavailable.
+- Repair Computer Use errors such as `native pipe unavailable`, `missing-helper-path`, broken plugin cache, or broken helper paths.
+- Repair native phone remote control under a third-party API login state when the entry is hidden, the QR code keeps spinning, setup redirects to ChatGPT login, Allow fails, or the phone says the Codex version is expired.
+- Repair Goal entries, settings entries, or feature buttons that disappear or become disabled after updates.
+- Repair broken local plugin marketplace config or `codex plugin list` errors.
+- Optionally back up and restore local Codex config, skills, marketplaces, and related state.
+- Automatically update this skill to the latest version before each repair attempt.
 
 ## Platform Support
 
@@ -36,12 +34,16 @@ Do not run it on macOS. A macOS version needs a separate workflow for the Codex 
 - `agents/openai.yaml`: Agent configuration.
 - `scripts/repatch-codex-windows.ps1`: Workflow reference script.
 - `scripts/patch_codex_fast_mode_windows_msix.ps1`: MSIX / ASAR patch reference implementation.
+- `scripts/patch-remote-control-windows-msix.ps1`: Phone remote-control MSIX / ASAR patch and marker verification reference implementation.
+- `scripts/patch-remote-control-asar.cjs`: Phone remote-control Electron bundle patcher used by the MSIX script.
 - `scripts/install-computer-use-local.ps1`: Windows Computer Use local compatibility reference implementation.
 - `scripts/install-model-instructions-file.ps1`: Optional installer for the bundled `model_instructions_file` prompt asset.
 - `scripts/manage-codex-backups.ps1`: Backup manager for local Codex config, MCP, skills, and marketplaces.
+- `scripts/restore-latest-codex-config-backup.ps1`: Emergency restore helper for a broken `.codex\config.toml`.
 - `scripts/update-skill-from-github.ps1`: Best-effort self-update script that syncs the latest GitHub version before use.
 - `assets/system-prompt.md`: Bundled prompt asset used only when optional model instructions setup is requested.
-- `references/restriction-debug-cases.md`: On-demand cases for restriction gates, Chrome/browser_use, Computer Use, mobile entry failures, and CPA Fast Mode.
+- `references/restriction-debug-cases.md`: On-demand cases for restriction gates, Chrome/browser_use, Computer Use, and CPA Fast Mode.
+- `references/remote-control-debug-cases.md`: On-demand cases for phone remote-control pairing, isolated auth, native app-server networking, version-expired state, and post-pairing API endpoint diagnosis.
 
 ## Install
 
@@ -75,13 +77,31 @@ The scripts are reference implementations and operational templates, not a one-c
 
 ## Which Runner To Use
 
-- If Computer Use says the plugin is unavailable, shows `missing-helper-path`, breaks again after restart, or Chrome/browser helper paths, cache links, or native-host files are wrong: the current Codex Desktop session can use this skill; no other agent is required. Run `scripts/install-computer-use-local.ps1` or `scripts/install-computer-use-local.ps1 -VerifyOnly`, then restart Codex.
-- If plugin marketplace config is broken, `codex plugin list` fails because of marketplace manifests, or a local marketplace is missing `.agents\plugins\marketplace.json`: the current Codex Desktop session can use this skill; no other agent is required. Run `scripts/repatch-codex-windows.ps1 -RegisterMarketplaceOnly` or the local marketplace repair flow.
-- If the user explicitly asks to install the bundled custom model instructions prompt: run `scripts/install-model-instructions-file.ps1`, then restart Codex CLI/Desktop or start a new session.
-- If the Codex Mobile / Connections mobile-control entry disappears entirely: it is usually hidden by `features.remote_connections` or a Statsig gate, not removed. Running repatch writes `remote_connections = true`. If `Connections` opens but only shows the SSH card, the second-layer remote-control section gate is still closed. In 26.602.9276-era UI, the visible entry may simply be `Settings -> Coding -> Connections`, not the old standalone "Codex Mobile" or mobile-control label.
-- If Fast Mode is missing or does not send `service_tier=priority`, plugin entries or install buttons are greyed out, Computer Control `Any App` is greyed out, Browser/Chrome/browser_use is greyed out, language resets to English after restart, Goal entries disappear, or Codex Mobile / Connections setup loops into login: these require patching Codex Desktop MSIX/ASAR. Prefer another agent or an external PowerShell for the full repatch so the current Desktop session is not interrupted while it stops and reinstalls itself.
+Some repairs reinstall Codex Desktop. During reinstall, the current Codex Desktop process is closed. Do not ask the same Codex Desktop session to reinstall itself unless you are fine with the session being interrupted.
+
+The current Codex Desktop session can usually repair these without another agent:
+
+- Computer Use says the plugin is unavailable, shows `native pipe unavailable` or `missing-helper-path`, or breaks again after restart.
+- Chrome / browser_use helper paths, plugin cache, or native-host files are broken.
+- Plugin marketplace config is broken, or `codex plugin list` fails because of marketplace manifests.
+- A local marketplace is missing `.agents\plugins\marketplace.json`.
+- You only need backup/restore work or the optional custom model instructions setup.
+- Phone remote control already pairs, but phone-created turns hit the wrong model API endpoint. Treat this as a post-pairing configuration diagnosis: inspect the actual request URL and current config before changing anything.
+
+Use another agent, external PowerShell, the Codex extension inside VS Code/Antigravity, or any environment that will not be closed by the Codex Desktop reinstall for these:
+
+- Fast Mode / Priority Mode is hidden or not taking effect.
+- The UI language resets to English after restart.
+- Plugin entries, install buttons, Goal entries, or Computer Control `Any App` are greyed out or missing.
+- The in-app browser, browser pane, Chrome, or browser_use is hidden or disabled by Desktop-side gates.
+- Phone remote control is hidden, the QR keeps spinning, setup redirects to ChatGPT login, Allow fails, or the phone reports an expired Codex version.
+- Any repair that needs a full repatch, MSIX repack, Developer-signed package install, `app.asar` replacement, or `resources\codex.exe` replacement.
+
+Simple rule: if the repair stops, uninstalls, reinstalls, or relaunches Codex Desktop, run it from another agent or external PowerShell. If it only changes local config, plugin cache, marketplace files, backups, or verification, the current Codex Desktop session can usually handle it.
 
 Example request: `Use the codex-windows-fast-patch skill to inspect and repair Codex Desktop Fast Mode, language/locale, Chrome browser_use, plugin marketplace, and Computer Use availability on this Windows machine.`
+
+Phone remote-control example request: `Use the codex-windows-fast-patch skill to repair Windows Codex Desktop phone remote control while preserving my third-party API provider and current conversation history.`
 
 Expected verification after a full run:
 
@@ -89,6 +109,7 @@ Expected verification after a full run:
 - Fast Mode wire verification captures `service_tier=priority` in Codex Desktop's `/v1/responses` request.
 - Desktop logs show `browser_use_availability_resolved` with `available=true` and `reason=local-patched` when browser use is part of the repair.
 - If Chrome control is required, `codex plugin list` shows `chrome@openai-bundled` as `installed, enabled`, the native messaging host manifest points to existing files, and a smoke test can read a controlled tab title such as `Example Domain`.
+- If phone remote control is repaired, Connections shows the phone setup path, QR appears, phone scan does not report an expired Codex environment, native logs show remote-control WebSocket ping/pong/ack, and phone-created turns reach Desktop.
 
 ## Backup Management
 
@@ -109,6 +130,15 @@ Restore from a backup:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\skills\codex-windows-fast-patch\scripts\manage-codex-backups.ps1" -Action Restore -BackupPath "<backup path>"
 ```
+
+If Codex cannot start because `config.toml` is corrupted, use the emergency restore helper from PowerShell outside Codex. The first command is a dry run; the second applies the restore:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\skills\codex-windows-fast-patch\scripts\restore-latest-codex-config-backup.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\skills\codex-windows-fast-patch\scripts\restore-latest-codex-config-backup.ps1" -Apply
+```
+
+The restore helper selects the newest valid backup under `.codex\backups\config\`, rejects empty or NUL-corrupted files, saves the current target as a rollback file, and writes the restored `config.toml` through the safe writer.
 
 By default, the backup includes custom skills, marketplaces, `config.toml`, extracted `mcp_servers.json`, and `chrome-native-hosts.json`, while excluding easy-to-grow directories such as `.git`, `node_modules`, build outputs, and virtual environments. Use `-IncludeDependencyDirs` only when an exact offline dependency copy is needed; plugin cache and `.tmp\bundled-marketplaces` can also be large, so include them only when needed with `-IncludePluginCache` or `-IncludeTmpBundledMarketplaces`.
 

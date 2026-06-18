@@ -1,6 +1,6 @@
 # Restriction Debug Cases
 
-Use this reference only when the main `SKILL.md` workflow does not explain the current Codex Desktop restriction, plugin gate, Computer Use failure, or mobile remote-control failure. Keep the investigation evidence-based: prefer package status, config, plugin list output, Desktop logs, sandbox logs, and captured network requests over assumptions.
+Use this reference only when the main `SKILL.md` workflow does not explain the current Codex Desktop restriction, plugin gate, Computer Use failure, browser_use failure, or Fast Mode failure. Keep the investigation evidence-based: prefer package status, config, plugin list output, Desktop logs, sandbox logs, and captured network requests over assumptions.
 
 ## Fast Mode Is Visible But Not Actually Fast
 
@@ -89,6 +89,33 @@ Action:
 - Confirm the latest Desktop log ends with `computer-use native pipe startup ready`.
 - If `-StrictVerifyOnly` fails because `plugins\cache\openai-bundled\computer-use\latest\.codex-plugin\plugin.json` is missing, run `-VerifyOnly` once to rebuild the cached plugin and `latest` link, then rerun `-StrictVerifyOnly`.
 
+## Computer Use Task Fails Before App Interaction
+
+Symptoms:
+
+- A Computer Use task stops before touching any app or window.
+- The visible result says `Computer Use native pipe is unavailable`.
+- The plugin or Node REPL error mentions `Package subpath ... is not defined by "exports"`.
+- The plugin or Node REPL error mentions `Module not found: @oai/sky`, missing `setupComputerUseRuntime`, or an internal `computer_use_client_base` import failure.
+- The failure starts immediately after a Codex Desktop or bundled plugin update.
+
+Checks:
+
+- Inspect the installed package with `Get-AppxPackage -Name OpenAI.Codex | Select-Object Version,SignatureKind,InstallLocation`.
+- Check both `app\resources\app.asar` and `app\resources\codex.exe` under the current `InstallLocation`. Do not assume `codex.exe` being a PE file means the ASAR route is gone.
+- Inspect `%USERPROFILE%\.codex\plugins\cache\openai-bundled\computer-use\latest\scripts\computer-use-client.mjs`.
+- Inspect `%LOCALAPPDATA%\OpenAI\Codex\runtimes\cua_node\*\bin\node_modules\@oai\sky\package.json`, especially the `exports` map. Newer runtime packages may export only `"."`, which breaks deep bare imports from plugin scripts.
+- Inspect `%USERPROFILE%\.codex\config.toml` for stale `[mcp_servers.node_repl.env]` entries named `SKY_CUA_NATIVE_PIPE` or `SKY_CUA_NATIVE_PIPE_DIRECTORY`.
+
+Action:
+
+- Run `scripts\install-computer-use-local.ps1 -VerifyOnly` to rebuild the local bundled plugin mirror, stable cache links, CUA runtime overlay, Chrome native host paths, and config cleanup.
+- Run `scripts\install-computer-use-local.ps1 -StrictVerifyOnly` immediately after. Treat `client import ok` and `helper transport ok` as the local repair success signal.
+- If `-StrictVerifyOnly` fails because a cache link or plugin file is missing, rerun `-VerifyOnly` once, then rerun `-StrictVerifyOnly`.
+- In 26.609-style caches, `browser\latest` or `chrome\latest` may be absent while the versioned cache directory still exists. Do not treat that as a Computer Use failure by itself; require the versioned browser/chrome plugin manifests and only validate a support-plugin `latest` junction when it exists.
+- If verification succeeds but Desktop still reports native pipe unavailable, fully quit and relaunch Codex Desktop, then inspect the newest Desktop log for `computer-use native pipe startup ready`.
+- Only consider a full MSIX repack when Desktop logs or UI evidence show a closed feature gate. Do not patch `resources\codex.exe` or the ASAR just because the immediate failure is an `@oai/sky` package export/import error.
+
 ## Sandbox Setup Refresh Fails With OS Error 740
 
 Symptoms:
@@ -107,26 +134,6 @@ Action:
 - Check `codex sandbox --help` before verification.
 - If the help lists a `windows` command, verify with `codex sandbox windows "C:\Windows\System32\cmd.exe" /c echo OK`.
 - Only builds whose help accepts a direct command form should use `codex sandbox "C:\Windows\System32\cmd.exe" /c echo OK`.
-
-## Codex Mobile Entry Opens Then Drops Back
-
-Symptoms:
-
-- The "Codex mobile" / "Codex 移动版" entry appears, but clicking it exits, drops back, or opens nothing.
-- Connections > Control This Computer > Set up routes to login, repeatedly errors, or leaves a modal that is hard to exit.
-
-Checks:
-
-- Inspect Desktop logs under `%LOCALAPPDATA%\Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\Local\Codex\Logs\<year>\<month>\<day>`.
-- Look for `load_remote_control_unauthed` or `refresh_local_remote_control_client_id_failed`.
-- Inspect extracted ASAR files `webview\assets\codex-mobile-setup-flow-*.js` and `.vite\build\main-*.js`.
-
-Action:
-
-- Patch `codex-mobile-setup-flow-*.js` so a remote-control auth error does not navigate the settings modal to `/login` and return `null`.
-- Patch the main-process remote-control unauthenticated branch so it publishes a safe empty state instead of an auth-required loop.
-- In `.vite\build\main-*.js`, match the remote-control unauthenticated branch by behavior (`local_remote_control_client_id=null`, `authRequired:!0`, `clientAuthorized:!1`, `load_remote_control_unauthed`) rather than hard-coded minified class or logger names.
-- If logs still say `Sign in to ChatGPT in Codex Desktop`, the local patch can keep the UI usable, but real cross-device remote-control enrollment still requires ChatGPT Desktop sign-in, not only API-key Codex login.
 
 ## Self-Update Fails
 

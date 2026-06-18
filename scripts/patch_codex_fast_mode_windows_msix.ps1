@@ -18,6 +18,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $LogPrefix = '[codex-msix-patch-win]'
+$OutputRootWasExplicit = $PSBoundParameters.ContainsKey('OutputRoot')
 $WindowsSdkBuildToolsPackageId = 'microsoft.windows.sdk.buildtools'
 $WindowsSdkBuildToolsVersion = '10.0.26100.7705'
 $WindowsSdkInstallTimeoutSeconds = 300
@@ -124,6 +125,42 @@ function Find-CodexAppPath {
   Fail 'could not find Windows Store/MSIX Codex app. Pass -AppPath explicitly.'
 }
 
+function Resolve-OutputRoot {
+  param(
+    [Parameter(Mandatory = $true)][string]$Candidate,
+    [bool]$WasExplicit
+  )
+  if ([string]::IsNullOrWhiteSpace($Candidate)) {
+    Fail 'OutputRoot is empty'
+  }
+
+  $expanded = [Environment]::ExpandEnvironmentVariables($Candidate)
+  $fullPath = [System.IO.Path]::GetFullPath($expanded)
+
+  $item = Get-Item -LiteralPath $fullPath -Force -ErrorAction SilentlyContinue
+  if ($item -and (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) {
+    $targets = @($item.Target) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    $target = $targets | Select-Object -First 1
+    if (-not [string]::IsNullOrWhiteSpace($target) -and -not (Test-Path -LiteralPath $target)) {
+      try {
+        New-Item -ItemType Directory -Force -Path $target | Out-Null
+        Write-Log "recreated missing OutputRoot reparse target: $fullPath -> $target"
+      } catch {
+        if ($WasExplicit) {
+          Fail "OutputRoot is a broken reparse point and its target could not be recreated: $fullPath -> $target ($($_.Exception.Message))"
+        }
+        $fallback = Join-Path ([System.IO.Path]::GetTempPath()) 'codex-msix-repack'
+        Write-Log "warning: default OutputRoot is a broken reparse point and could not be repaired: $fullPath -> $target"
+        Write-Log "warning: falling back to temporary OutputRoot: $fallback"
+        $fullPath = [System.IO.Path]::GetFullPath($fallback)
+      }
+    }
+  }
+
+  New-Item -ItemType Directory -Force -Path $fullPath | Out-Null
+  return (Resolve-Path -LiteralPath $fullPath -ErrorAction Stop).ProviderPath
+}
+
 function Get-PackageRoot {
   param([string]$App)
   return (Split-Path -Parent $App)
@@ -212,7 +249,7 @@ function Remove-DirectoryRobust {
   $emptyDir = Join-Path ([System.IO.Path]::GetTempPath()) ('codex-empty-' + [guid]::NewGuid().ToString('N'))
   New-Item -ItemType Directory -Force -Path $emptyDir | Out-Null
   try {
-    & robocopy.exe $emptyDir $resolved /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
+    & robocopy.exe $emptyDir $resolved /MIR /R:2 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
     if ($LASTEXITCODE -gt 7) {
       Write-Log "warning: robocopy empty mirror cleanup failed with exit code $LASTEXITCODE for $resolved"
     }
@@ -323,7 +360,7 @@ function Copy-PackageLayout {
   if (-not (Test-Path -LiteralPath $WorkPackageRoot)) {
     New-Item -ItemType Directory -Force -Path $WorkPackageRoot | Out-Null
     Write-Log "copying package layout to: $WorkPackageRoot"
-    & robocopy.exe $SourcePackageRoot $WorkPackageRoot /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
+    & robocopy.exe $SourcePackageRoot $WorkPackageRoot /MIR /R:2 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
     if ($LASTEXITCODE -gt 7) {
       Fail "robocopy failed with exit code $LASTEXITCODE"
     }
@@ -552,9 +589,9 @@ function patchPluginPageAuth(file) {
     process.stderr.write('plugin-page-auth-target-not-found\n');
     process.exit(2);
   }
-  if (/\{authMethod:\w+\}=[A-Za-z_$][\w$]*\(\),\w+=!1,/.test(text)) return;
+  if (/\{authMethod:[A-Za-z_$][\w$]*\}=[A-Za-z_$][\w$]*\(\),[A-Za-z_$][\w$]*=!1,/.test(text)) return;
 
-  const originalRe = /\{authMethod:(\w+)\}=([A-Za-z_$][\w$]*)\(\),(\w+)=([A-Za-z_$][\w$]*)\(\1\),/;
+  const originalRe = /\{authMethod:([A-Za-z_$][\w$]*)\}=([A-Za-z_$][\w$]*)\(\),([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(\1\),/;
   const next = text.replace(originalRe, (_match, authMethodVar, authHook, blockedVar) =>
     `{authMethod:${authMethodVar}}=${authHook}(),${blockedVar}=!1,`
   );
@@ -622,6 +659,11 @@ if (!nextSlash.includes(slashPatched) && !slashPatchedRe.test(nextSlash)) {
     changedSlash = true;
   } else if (cmdkSlashRe.test(nextSlash) && (cmdkKeywordSearchRe.test(nextSlash) || nextSlash.includes('keywords:r'))) {
     // Codex 26.519+ moved slash filtering to cmdk keywords; command id matching is already handled there.
+  } else if (nextSlash.includes('sourceMappingURL=slash-command-item') &&
+             !nextSlash.includes('score:') &&
+             !nextSlash.includes('e.command.group??null')) {
+    // Codex 26.609.4994+ keeps this chunk but moved the legacy slash scorer elsewhere.
+    // The composer gate below is the required Goal enablement patch for this shape.
   } else {
     process.stderr.write('slash-match-patch-target-not-found\n');
     process.exit(2);
@@ -650,15 +692,11 @@ process.stdout.write('patched');
 
   Set-Content -LiteralPath $computerUsePatcherPath -Encoding UTF8 -Value @'
 const fs = require('node:fs');
-const [availabilityFile, installFlowFile, mobileSetupFile, mobileSetupFlowFile, remoteControlMainFile, remoteVisibilityFile] = process.argv.slice(2);
+const [availabilityFile, installFlowFile, setupFile] = process.argv.slice(2);
 let changed = false;
 
 function read(file) {
   return fs.readFileSync(file, 'utf8');
-}
-
-function hasFile(file) {
-  return typeof file === 'string' && file.length > 0 && file !== '__none__' && fs.existsSync(file);
 }
 
 function writeIfChanged(file, before, after) {
@@ -666,27 +704,6 @@ function writeIfChanged(file, before, after) {
     fs.writeFileSync(file, after);
     changed = true;
   }
-}
-
-function patchRemoteConnectionsVisibility(file) {
-  const before = read(file);
-  const alreadyPatched = before.includes('remote_connections') &&
-    /function [A-Za-z_$][\w$]*\(\)\{return !0\}/.test(before);
-  if (!before.includes('1042620455') || !before.includes('remote_connections')) {
-    if (alreadyPatched) return;
-    process.stderr.write('remote-connections-section-visibility-target-not-found\n');
-    process.exit(2);
-  }
-
-  const after = before.replace(
-    /function ([A-Za-z_$][\w$]*)\(\)\{return [A-Za-z_$][\w$]*\(`1042620455`\)\}/,
-    'function $1(){return !0}'
-  );
-  if (after === before && !alreadyPatched) {
-    process.stderr.write('remote-connections-section-visibility-patch-target-not-found\n');
-    process.exit(2);
-  }
-  writeIfChanged(file, before, after);
 }
 
 function patchComputerUseAvailability(file) {
@@ -735,77 +752,16 @@ function patchComputerUseInstallFlow(file) {
   writeIfChanged(file, before, after);
 }
 
-function patchMobileSetup(file) {
+function patchComputerUseSetup(file) {
   const before = read(file);
   if (!before.includes('showComputerUseSetup')) {
-    process.stderr.write('computer-use-mobile-setup-target-not-found\n');
+    process.stderr.write('computer-use-setup-target-not-found\n');
     process.exit(2);
   }
 
   const after = before.replace(/=[A-Za-z_$][\w$]*\(`1506311413`\)/, '=!0');
   if (after === before && before.includes('1506311413')) {
-    process.stderr.write('computer-use-mobile-setup-patch-target-not-found\n');
-    process.exit(2);
-  }
-  writeIfChanged(file, before, after);
-}
-
-function patchCodexMobileSetupFlow(file) {
-  const before = read(file);
-  if (!before.includes('CODEX_MOBILE_SETUP_COMPLETED') || !before.includes('ChatGPT auth is required to load remote control environments')) {
-    process.stderr.write('codex-mobile-setup-flow-target-not-found\n');
-    process.exit(2);
-  }
-
-  const after = before.replace('let W=U,G,J;', 'let W=!1,G,J;');
-  if (after === before && !before.includes('let W=!1,G,J;')) {
-    process.stderr.write('codex-mobile-setup-flow-patch-target-not-found\n');
-    process.exit(2);
-  }
-  writeIfChanged(file, before, after);
-}
-
-function patchRemoteControlMain(file) {
-  const before = read(file);
-  if (!before.includes('load_remote_control_unauthed') || !before.includes('remote_control_connections_state')) {
-    process.stderr.write('remote-control-main-target-not-found\n');
-    process.exit(2);
-  }
-
-  let after = before.replace(
-    'if(e instanceof Am)return this.sharedObjectRepository.set(`local_remote_control_client_id`,null),this.sharedObjectRepository.set(`remote_control_connections_state`,{available:!0,accessRequired:!1,authRequired:!0,clientAuthorized:!1}),sJ().warning(`load_remote_control_unauthed`,{safe:{},sensitive:{error:e}}),[];',
-    'if(e instanceof Am)return this.sharedObjectRepository.set(`local_remote_control_client_id`,`codex-windows-local-fallback`),this.sharedObjectRepository.set(`remote_control_connections_state`,{available:!0,accessRequired:!1,authRequired:!1,clientAuthorized:!0}),sJ().warning(`load_remote_control_unauthed`,{safe:{fallback:`windows-safe-empty-state`},sensitive:{error:e}}),[];'
-  );
-  if (after === before) {
-    after = before.replace(
-      /if\(e instanceof ([A-Za-z_$][\w$]*)\)return this\.sharedObjectRepository\.set\(`local_remote_control_client_id`,null\),this\.sharedObjectRepository\.set\(`remote_control_connections_state`,\{available:!0,accessRequired:!1,authRequired:!0,clientAuthorized:!1\}\),([A-Za-z_$][\w$]*)\(\)\.warning\(`load_remote_control_unauthed`,\{safe:\{\},sensitive:\{error:e\}\}\),\[\];/,
-      (_match, authErrorClass, loggerFn) =>
-        `if(e instanceof ${authErrorClass})return this.sharedObjectRepository.set(\`local_remote_control_client_id\`,\`codex-windows-local-fallback\`),this.sharedObjectRepository.set(\`remote_control_connections_state\`,{available:!0,accessRequired:!1,authRequired:!1,clientAuthorized:!0}),${loggerFn}().warning(\`load_remote_control_unauthed\`,{safe:{fallback:\`windows-safe-empty-state\`},sensitive:{error:e}}),[];`
-    );
-  }
-
-  after = after.replace(
-    /async refreshLocalRemoteControlClientId\(\)\{try\{let\{clientId:([A-Za-z_$][\w$]*)\}=await this\.getRemoteControlClientEnrollmentStatus\(\);this\.sharedObjectRepository\.set\(`local_remote_control_client_id`,\1\)\}catch\(([A-Za-z_$][\w$]*)\)\{([A-Za-z_$][\w$]*)\(\)\.warning\(`refresh_local_remote_control_client_id_failed`,\{safe:\{\},sensitive:\{error:\2\}\}\)\}\}/,
-    (_match, clientIdVar, errorVar, loggerFn) =>
-      `async refreshLocalRemoteControlClientId(){try{let{clientId:${clientIdVar}}=await this.getRemoteControlClientEnrollmentStatus();this.sharedObjectRepository.set(\`local_remote_control_client_id\`,${clientIdVar})}catch(${errorVar}){this.sharedObjectRepository.set(\`local_remote_control_client_id\`,\`codex-windows-local-fallback\`);let codexWindowsRemoteControlState=this.sharedObjectRepository.get(\`remote_control_connections_state\`);this.sharedObjectRepository.set(\`remote_control_connections_state\`,{...codexWindowsRemoteControlState,available:!0,accessRequired:!1,authRequired:!1,clientAuthorized:!0});${loggerFn}().warning(\`refresh_local_remote_control_client_id_failed\`,{safe:{fallback:\`windows-safe-empty-state\`},sensitive:{error:${errorVar}}})}}`
-  );
-
-  after = after.replace(
-    /async refreshRemoteControlClientAuthorizationState\(\)\{try\{let\{clientAuthorized:([A-Za-z_$][\w$]*),clientId:([A-Za-z_$][\w$]*)\}=await this\.getRemoteControlClientEnrollmentStatus\(\);this\.sharedObjectRepository\.set\(`local_remote_control_client_id`,\2\);let ([A-Za-z_$][\w$]*)=this\.sharedObjectRepository\.get\(`remote_control_connections_state`\);if\(\3==null\)return;this\.sharedObjectRepository\.set\(`remote_control_connections_state`,\{\.\.\.\3,clientAuthorized:\1\}\)\}catch\(([A-Za-z_$][\w$]*)\)\{([A-Za-z_$][\w$]*)\(\)\.warning\(`refresh_remote_control_client_authorization_state_failed`,\{safe:\{\},sensitive:\{error:\4\}\}\)\}\}/,
-    (_match, clientAuthorizedVar, clientIdVar, stateVar, errorVar, loggerFn) =>
-      `async refreshRemoteControlClientAuthorizationState(){try{let{clientAuthorized:${clientAuthorizedVar},clientId:${clientIdVar}}=await this.getRemoteControlClientEnrollmentStatus();this.sharedObjectRepository.set(\`local_remote_control_client_id\`,${clientIdVar});let ${stateVar}=this.sharedObjectRepository.get(\`remote_control_connections_state\`);if(${stateVar}==null)return;this.sharedObjectRepository.set(\`remote_control_connections_state\`,{...${stateVar},clientAuthorized:${clientAuthorizedVar}})}catch(${errorVar}){this.sharedObjectRepository.set(\`local_remote_control_client_id\`,\`codex-windows-local-fallback\`);let codexWindowsRemoteControlState=this.sharedObjectRepository.get(\`remote_control_connections_state\`);this.sharedObjectRepository.set(\`remote_control_connections_state\`,{...codexWindowsRemoteControlState,available:!0,accessRequired:!1,authRequired:!1,clientAuthorized:!0});${loggerFn}().warning(\`refresh_remote_control_client_authorization_state_failed\`,{safe:{fallback:\`windows-safe-empty-state\`},sensitive:{error:${errorVar}}})}}`
-  );
-
-  after = after.replaceAll(
-    'let e=this.sharedObjectRepository.get(`remote_control_connections_state`);this.sharedObjectRepository.set(`remote_control_connections_state`,{...e,available:!0,accessRequired:!1,authRequired:!1,clientAuthorized:!0});',
-    'let codexWindowsRemoteControlState=this.sharedObjectRepository.get(`remote_control_connections_state`);this.sharedObjectRepository.set(`remote_control_connections_state`,{...codexWindowsRemoteControlState,available:!0,accessRequired:!1,authRequired:!1,clientAuthorized:!0});'
-  );
-
-  if (after === before &&
-      !before.includes('safe:{fallback:`windows-safe-empty-state`}') &&
-      !before.includes('refresh_local_remote_control_client_id_failed`,{safe:{fallback:`windows-safe-empty-state`}') &&
-      !before.includes('refresh_remote_control_client_authorization_state_failed`,{safe:{fallback:`windows-safe-empty-state`}')) {
-    process.stderr.write('remote-control-main-patch-target-not-found\n');
+    process.stderr.write('computer-use-setup-patch-target-not-found\n');
     process.exit(2);
   }
   writeIfChanged(file, before, after);
@@ -813,10 +769,7 @@ function patchRemoteControlMain(file) {
 
 patchComputerUseAvailability(availabilityFile);
 patchComputerUseInstallFlow(installFlowFile);
-patchMobileSetup(mobileSetupFile);
-if (hasFile(mobileSetupFlowFile)) patchCodexMobileSetupFlow(mobileSetupFlowFile);
-patchRemoteControlMain(remoteControlMainFile);
-if (hasFile(remoteVisibilityFile)) patchRemoteConnectionsVisibility(remoteVisibilityFile);
+patchComputerUseSetup(setupFile);
 
 process.stdout.write(changed ? 'patched' : 'already-patched');
 '@
@@ -856,11 +809,40 @@ function patchFeatureHook(file) {
     /let p=u\(f\),m=o\(e\.runCodexInWsl\),h=p\.enabled&&!p\.isLoading,_=p\.isLoading,v=m===!0,y;/,
     'let p={enabled:!0,isLoading:!1},m=!1,h=!0,_=!1,v=!1,y;'
   );
+  after = after.replace(
+    /let s=g\(o\),l=i===`chrome-extension`\|\|a&&s\.enabled&&!s\.isLoading,u=i===`chrome-extension`\?!1:s\.isLoading,d;/,
+    'let s={enabled:!0,isLoading:!1},l=!0,u=!1,d;'
+  );
+  after = after.replace(
+    /let ([A-Za-z_$][\w$]*)=x\(([A-Za-z_$][\w$]*)\),([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)===`chrome-extension`\|\|([A-Za-z_$][\w$]*)&&\1\.enabled&&!\1\.isLoading,([A-Za-z_$][\w$]*)=\4===`chrome-extension`\?!1:\1\.isLoading,([A-Za-z_$][\w$]*);/,
+    'let $1={enabled:!0,isLoading:!1},$3=!0,$6=!1,$7;'
+  );
+  after = after.replace(
+    /i=n\(m\),a=c\(`410262010`\),l;/,
+    'i=!0,a=!0,l;'
+  );
+  after = after.replace(
+    /([A-Za-z_$][\w$]*)=r\(g\),([A-Za-z_$][\w$]*)=u\(`410262010`\),([A-Za-z_$][\w$]*);/,
+    '$1=!0,$2=!0,$3;'
+  );
+  after = after.replace(
+    /let u=g\(l\),d=s\(o\.runCodexInWsl\),f=u\.enabled&&!u\.isLoading,p=u\.isLoading,_=d===!0,v;/,
+    'let u={enabled:!0,isLoading:!1},d=!1,f=!0,p=!1,_=!1,v;'
+  );
+  after = after.replace(
+    /let ([A-Za-z_$][\w$]*)=x\(([A-Za-z_$][\w$]*)\),([A-Za-z_$][\w$]*)=l\(c\.runCodexInWsl\),([A-Za-z_$][\w$]*)=\1\.enabled&&!\1\.isLoading,([A-Za-z_$][\w$]*)=\1\.isLoading,([A-Za-z_$][\w$]*)=\3===!0,([A-Za-z_$][\w$]*);/,
+    'let $1={enabled:!0,isLoading:!1},$3=!1,$4=!0,$5=!1,$6=!1,$7;'
+  );
 
   if (after === before &&
       !before.includes('let c={enabled:!0,isLoading:!1},d=!0,f=!1,p;') &&
       !before.includes('s=!0,d=!0,f;') &&
-      !before.includes('let p={enabled:!0,isLoading:!1},m=!1,h=!0,_=!1,v=!1,y;')) {
+      !before.includes('let p={enabled:!0,isLoading:!1},m=!1,h=!0,_=!1,v=!1,y;') &&
+      !before.includes('let s={enabled:!0,isLoading:!1},l=!0,u=!1,d;') &&
+      !before.includes('i=!0,a=!0,l;') &&
+      !before.includes('let u={enabled:!0,isLoading:!1},d=!1,f=!0,p=!1,_=!1,v;') &&
+      !/\{enabled:!0,isLoading:!1\},[A-Za-z_$][\w$]*=!0,[A-Za-z_$][\w$]*=!1/.test(before) &&
+      !/[A-Za-z_$][\w$]*=!0,[A-Za-z_$][\w$]*=!0,[A-Za-z_$][\w$]*;/.test(before)) {
     process.stderr.write('browser-use-feature-hook-patch-target-not-found\n');
     process.exit(2);
   }
@@ -878,7 +860,13 @@ function patchSidebarAvailability(file) {
     /var i=`in_app_browser`,a=t\(n,\(\{get:t\}\)=>\{let\{data:n\}=t\(r,t\(e\)\),a=n\?\.find\(e=>e\.name===i\);return n!=null&&a\?\.enabled!==!1\}\);/,
     'var i=`in_app_browser`,a=t(n,()=>!0);'
   );
-  if (after === before && !before.includes('a=t(n,()=>!0)')) {
+  after = after.replace(
+    /var ([A-Za-z_$][\w$]*)=`in_app_browser`,([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*),\(\{get:[A-Za-z_$][\w$]*\}\)=>\{let\{data:[A-Za-z_$][\w$]*\}=[A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*,[A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*\)\),[A-Za-z_$][\w$]*=[A-Za-z_$][\w$]*\?\.find\([A-Za-z_$][\w$]*=>[A-Za-z_$][\w$]*\.name===\1\);return [A-Za-z_$][\w$]*!=null&&[A-Za-z_$][\w$]*\?\.enabled!==!1\}\);/,
+    'var $1=`in_app_browser`,$2=$3($4,()=>!0);'
+  );
+  if (after === before &&
+      !before.includes('a=t(n,()=>!0)') &&
+      !before.includes('()=>!0')) {
     process.stderr.write('browser-sidebar-availability-patch-target-not-found\n');
     process.exit(2);
   }
@@ -887,22 +875,25 @@ function patchSidebarAvailability(file) {
 
 function patchDesktopFeatureSender(file) {
   const before = read(file);
+  const patchedSenderFragment = 'inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,browserPane:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0,computerUse:';
+  const patchedSenderPattern = /inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,(linksDefaultInAppBrowser:[^,}]+,)?browserPane:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0,computerUse:/;
   if (!before.includes('browser_use_availability_resolved') || !before.includes('electron-desktop-features-changed')) {
     process.stderr.write('browser-use-desktop-feature-sender-target-not-found\n');
     process.exit(2);
   }
 
   let after = before.replace(
-    /ci\.dispatchMessage\(`electron-desktop-features-changed`,\{ambientSuggestions:n,appshotsEnabled:r,codexChronicleConfig:s,inAppBrowserUse:p\.available,inAppBrowserUseAllowed:p\.allowed,browserPane:c,externalBrowserUse:h\.available,externalBrowserUseAllowed:h\.allowed,computerUse:_\.available,computerUseNodeRepl:_\.available,sites:i,control:v,dil:y,multiBrowserTabs:l,multiWindow:b,processManager:x\}\)/,
-    'ci.dispatchMessage(`electron-desktop-features-changed`,{ambientSuggestions:n,appshotsEnabled:r,codexChronicleConfig:s,inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,browserPane:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0,computerUse:_.available,computerUseNodeRepl:_.available,sites:i,control:v,dil:y,multiBrowserTabs:l,multiWindow:b,processManager:x})'
+    /inAppBrowserUse:[^,}]+,inAppBrowserUseAllowed:[^,}]+,(linksDefaultInAppBrowser:[^,}]+,)?browserPane:[^,}]+,externalBrowserUse:[^,}]+,externalBrowserUseAllowed:[^,}]+,computerUse:/,
+    'inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,$1browserPane:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0,computerUse:'
   );
   after = after.replace(
-    /J\.info\(`browser_use_availability_resolved`,\{safe:\{available:p\.available,platform:u\?\.osName\?\?`unknown`,reason:p\.reason,release:u\?\.version\?\?`unknown`\},sensitive:\{browserPane:c\}\}\)/,
-    'J.info(`browser_use_availability_resolved`,{safe:{available:!0,platform:u?.osName??`unknown`,reason:`local-patched`,release:u?.version??`unknown`},sensitive:{browserPane:!0}})'
+    /browser_use_availability_resolved`,\{safe:\{available:[^,]+,platform:([^,]+),reason:[^,]+,release:([^}]+)\},sensitive:\{browserPane:[^}]+\}\}\)/,
+    'browser_use_availability_resolved`,{safe:{available:!0,platform:$1,reason:`local-patched`,release:$2},sensitive:{browserPane:!0}})'
   );
 
   if (after === before &&
-      !before.includes('inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,browserPane:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0')) {
+      !before.includes(patchedSenderFragment) &&
+      !patchedSenderPattern.test(before)) {
     process.stderr.write('browser-use-desktop-feature-sender-patch-target-not-found\n');
     process.exit(2);
   }
@@ -912,19 +903,22 @@ function patchDesktopFeatureSender(file) {
 function patchDesktopFeatureMain(file) {
   const before = read(file);
   const patchedMainFragment = 'browserPane:!0,inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0';
+  const envGatePattern = /[A-Za-z_$][\w$]*=i===`win32`&&[A-Za-z_$][\w$]*\.CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE===`1`\?\{\.\.\.[A-Za-z_$][\w$]*,computerUse:!0,computerUseNodeRepl:!0\}:[A-Za-z_$][\w$]*/;
   if (!before.includes(patchedMainFragment) &&
-      (!before.includes('externalBrowserUse:o.externalBrowserUse') || !before.includes('inAppBrowserUse:o.inAppBrowserUse'))) {
+      (!before.includes('CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE') ||
+       (!envGatePattern.test(before) &&
+        !/inAppBrowserUse:[A-Za-z_$][\w$]*\.inAppBrowserUse,inAppBrowserUseAllowed:[A-Za-z_$][\w$]*\.inAppBrowserUseAllowed,browserPane:[A-Za-z_$][\w$]*\.browserPane,externalBrowserUse:[A-Za-z_$][\w$]*\.externalBrowserUse,externalBrowserUseAllowed:[A-Za-z_$][\w$]*\.externalBrowserUseAllowed/.test(before)))) {
     process.stderr.write('browser-use-desktop-feature-main-target-not-found\n');
     process.exit(2);
   }
 
   let after = before.replace(
-    /let a=i===`win32`&&n\.CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE===`1`\?\{\.\.\.e,computerUse:!0,computerUseNodeRepl:!0\}:e,o=/,
-    'let a=i===`win32`?{...e,browserPane:!0,inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0,...n.CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE===`1`?{computerUse:!0,computerUseNodeRepl:!0}:{}}:e,o='
+    /([A-Za-z_$][\w$]*)=i===`win32`&&r\.CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE===`1`\?\{\.\.\.([A-Za-z_$][\w$]*),computerUse:!0,computerUseNodeRepl:!0\}:\2/,
+    '$1=i===`win32`?{...$2,browserPane:!0,inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0,...r.CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE===`1`?{computerUse:!0,computerUseNodeRepl:!0}:{}}:$2'
   );
   after = after.replace(
-    /p\(\{ambientSuggestions:o\.ambientSuggestions,appshotsEnabled:o\.appshotsEnabled,inAppBrowserUse:o\.inAppBrowserUse,inAppBrowserUseAllowed:o\.inAppBrowserUseAllowed,browserPane:o\.browserPane,externalBrowserUse:o\.externalBrowserUse,externalBrowserUseAllowed:o\.externalBrowserUseAllowed,computerUse:o\.computerUse,computerUseNodeRepl:o\.computerUseNodeRepl,sites:o\.sites,control:o\.control,dil:o\.dil,multiBrowserTabs:o\.multiBrowserTabs,multiWindow:o\.multiWindow,processManager:o\.processManager\}\)/,
-    'p({ambientSuggestions:o.ambientSuggestions,appshotsEnabled:o.appshotsEnabled,inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,browserPane:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0,computerUse:o.computerUse,computerUseNodeRepl:o.computerUseNodeRepl,sites:o.sites,control:o.control,dil:o.dil,multiBrowserTabs:o.multiBrowserTabs,multiWindow:o.multiWindow,processManager:o.processManager})'
+    /inAppBrowserUse:[A-Za-z_$][\w$]*\.inAppBrowserUse,inAppBrowserUseAllowed:[A-Za-z_$][\w$]*\.inAppBrowserUseAllowed,browserPane:[A-Za-z_$][\w$]*\.browserPane,externalBrowserUse:[A-Za-z_$][\w$]*\.externalBrowserUse,externalBrowserUseAllowed:[A-Za-z_$][\w$]*\.externalBrowserUseAllowed,computerUse:/,
+    'inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,browserPane:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0,computerUse:'
   );
 
   if (after === before &&
@@ -1028,9 +1022,8 @@ function Find-PatchTargets {
   foreach ($candidate in $desktopFeatureSenderCandidates) {
     $text = Get-Content -Raw -LiteralPath $candidate
     if ($text.Contains('electron-desktop-features-changed') -and
-        (($text.Contains('inAppBrowserUse:p.available') -and
-          $text.Contains('externalBrowserUse:h.available')) -or
-         $text.Contains('inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,browserPane:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0'))) {
+        (($text -match 'inAppBrowserUse:[^,}]+,inAppBrowserUseAllowed:[^,}]+,(linksDefaultInAppBrowser:[^,}]+,)?browserPane:[^,}]+,externalBrowserUse:[^,}]+,externalBrowserUseAllowed:[^,}]+,computerUse:[^,}]+') -or
+         ($text -match 'inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,(linksDefaultInAppBrowser:[^,}]+,)?browserPane:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0'))) {
       $desktopFeatureSenderTarget = $candidate
       break
     }
@@ -1038,14 +1031,15 @@ function Find-PatchTargets {
   $desktopFeatureMainTarget = $null
   if (Test-Path -LiteralPath $viteBuildDir -PathType Container) {
     $desktopFeatureMainCandidates = @(
-      Invoke-RgList $RgPath 'externalBrowserUse:o.externalBrowserUse' $viteBuildDir
+      Invoke-RgList $RgPath 'CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE' $viteBuildDir
+      Invoke-RgList $RgPath 'externalBrowserUse:' $viteBuildDir
       Invoke-RgList $RgPath 'browserPane:!0' $viteBuildDir
     ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique
     foreach ($candidate in $desktopFeatureMainCandidates) {
       $text = Get-Content -Raw -LiteralPath $candidate
       if ($text.Contains('CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE') -and
-          (($text.Contains('externalBrowserUse:o.externalBrowserUse') -and
-            $text.Contains('inAppBrowserUse:o.inAppBrowserUse')) -or
+          (($text -match '[A-Za-z_$][\w$]*=i===`win32`&&[A-Za-z_$][\w$]*\.CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE===`1`\?\{\.\.\.[A-Za-z_$][\w$]*,computerUse:!0,computerUseNodeRepl:!0\}:[A-Za-z_$][\w$]*') -or
+           ($text -match 'inAppBrowserUse:[A-Za-z_$][\w$]*\.inAppBrowserUse,inAppBrowserUseAllowed:[A-Za-z_$][\w$]*\.inAppBrowserUseAllowed,browserPane:[A-Za-z_$][\w$]*\.browserPane,externalBrowserUse:[A-Za-z_$][\w$]*\.externalBrowserUse,externalBrowserUseAllowed:[A-Za-z_$][\w$]*\.externalBrowserUseAllowed') -or
            $text.Contains('browserPane:!0,inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0'))) {
         $desktopFeatureMainTarget = $candidate
         break
@@ -1060,8 +1054,8 @@ function Find-PatchTargets {
     $text = Get-Content -Raw -LiteralPath $candidate
     if ($text.Contains('openPluginInstall') -and
         $text.Contains('authMethod:') -and
-        (($text -match '\{authMethod:\w+\}=[A-Za-z_$][\w$]*\(\),\w+=[A-Za-z_$][\w$]*\(\w+\),') -or
-         ($text -match '\{authMethod:\w+\}=[A-Za-z_$][\w$]*\(\),\w+=!1,'))) {
+        (($text -match '\{authMethod:[A-Za-z_$][\w$]*\}=[A-Za-z_$][\w$]*\(\),[A-Za-z_$][\w$]*=[A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*\),') -or
+         ($text -match '\{authMethod:[A-Za-z_$][\w$]*\}=[A-Za-z_$][\w$]*\(\),[A-Za-z_$][\w$]*=!1,'))) {
       $pluginPageAuthTarget = $candidate
       break
     }
@@ -1112,6 +1106,16 @@ function Find-PatchTargets {
   $goalSlashTarget = $null
   foreach ($candidate in (Invoke-RgList $RgPath 'sourceMappingURL=slash-command-item|sourceMappingURL=local-remote-selection' $assetsDir)) {
     $text = Get-Content -Raw -LiteralPath $candidate
+    if ((Split-Path -Leaf $candidate) -like 'slash-command-item-*.js' -and
+        $text.Contains('sourceMappingURL=slash-command-item')) {
+      $goalSlashTarget = $candidate
+      break
+    }
+    if ($text.Contains('sourceMappingURL=slash-command-item') -and
+        $text -match 'command:e,score:[A-Za-z_$][\w$]*\(e\.title,\w+\)') {
+      $goalSlashTarget = $candidate
+      break
+    }
     if ((($text -match 'score:Math\.max\([A-Za-z_$][\w$]*\(e\.title,\w+\),[A-Za-z_$][\w$]*\(e\.id,\w+\)\)') -or
          ($text -match 'score:[A-Za-z_$][\w$]*\(e\.title,\w+\)')) -and
         $text.Contains('e.command.group??null') -and
@@ -1128,6 +1132,16 @@ function Find-PatchTargets {
   if ([string]::IsNullOrWhiteSpace($goalSlashTarget)) {
     foreach ($candidate in (Invoke-RgList $RgPath 'score:' $assetsDir)) {
       $text = Get-Content -Raw -LiteralPath $candidate
+      if ((Split-Path -Leaf $candidate) -like 'slash-command-item-*.js' -and
+          $text.Contains('sourceMappingURL=slash-command-item')) {
+        $goalSlashTarget = $candidate
+        break
+      }
+      if ($text.Contains('sourceMappingURL=slash-command-item') -and
+          $text -match 'command:e,score:[A-Za-z_$][\w$]*\(e\.title,\w+\)') {
+        $goalSlashTarget = $candidate
+        break
+      }
       if (((($text -match 'score:Math\.max\([A-Za-z_$][\w$]*\(e\.title,\w+\),[A-Za-z_$][\w$]*\(e\.id,\w+\)\)') -or
             ($text -match 'score:[A-Za-z_$][\w$]*\(e\.title,\w+\)')) -and
            $text.Contains('e.command.group??null') -and
@@ -1174,67 +1188,16 @@ function Find-PatchTargets {
     Fail 'could not find Computer Use install-flow gate in extracted assets'
   }
 
-  $computerUseMobileSetupTarget = $null
+  $computerUseSetupTarget = $null
   foreach ($candidate in (Invoke-RgList $RgPath 'showComputerUseSetup' $assetsDir)) {
     $text = Get-Content -Raw -LiteralPath $candidate
     if ($text.Contains('showComputerUseSetup')) {
-      $computerUseMobileSetupTarget = $candidate
+      $computerUseSetupTarget = $candidate
       break
     }
   }
-  if ([string]::IsNullOrWhiteSpace($computerUseMobileSetupTarget)) {
-    Fail 'could not find Computer Use mobile setup gate in extracted assets'
-  }
-
-  $codexMobileSetupFlowTarget = $null
-  foreach ($candidate in (Invoke-RgList $RgPath 'ChatGPT auth is required to load remote control environments' $assetsDir)) {
-    $text = Get-Content -Raw -LiteralPath $candidate
-    if ($text.Contains('CODEX_MOBILE_SETUP_COMPLETED') -and $text.Contains('let W=U,G,J;')) {
-      $codexMobileSetupFlowTarget = $candidate
-      break
-    }
-    if ($text.Contains('CODEX_MOBILE_SETUP_COMPLETED') -and $text.Contains('let W=!1,G,J;')) {
-      $codexMobileSetupFlowTarget = $candidate
-      break
-    }
-  }
-  if ([string]::IsNullOrWhiteSpace($codexMobileSetupFlowTarget)) {
-    Write-Log 'warning: Codex mobile setup-flow auth fallback target not found; skipping that compatibility patch'
-  }
-
-  $remoteControlMainTarget = $null
-  if (Test-Path -LiteralPath $viteBuildDir -PathType Container) {
-    foreach ($candidate in (Invoke-RgList $RgPath 'load_remote_control_unauthed' $viteBuildDir)) {
-      $text = Get-Content -Raw -LiteralPath $candidate
-      if ($text.Contains('remote_control_connections_state') -and $text.Contains('loadRemoteControlConnections')) {
-        $remoteControlMainTarget = $candidate
-        break
-      }
-    }
-  }
-  if ([string]::IsNullOrWhiteSpace($remoteControlMainTarget)) {
-    Fail 'could not find remote-control main-process auth fallback target in extracted ASAR'
-  }
-
-  $remoteConnectionVisibilityTarget = $null
-  foreach ($candidate in (Invoke-RgList $RgPath '1042620455' $assetsDir)) {
-    $text = Get-Content -Raw -LiteralPath $candidate
-    if ($text.Contains('remote_connections') -and $text.Contains('1042620455')) {
-      $remoteConnectionVisibilityTarget = $candidate
-      break
-    }
-  }
-  if ([string]::IsNullOrWhiteSpace($remoteConnectionVisibilityTarget)) {
-    foreach ($candidate in (Get-ChildItem -LiteralPath $assetsDir -Filter 'remote-connection-visibility-*.js' -File -ErrorAction SilentlyContinue)) {
-      $text = Get-Content -Raw -LiteralPath $candidate.FullName
-      if ($text.Contains('remote_connections')) {
-        $remoteConnectionVisibilityTarget = $candidate.FullName
-        break
-      }
-    }
-  }
-  if ([string]::IsNullOrWhiteSpace($remoteConnectionVisibilityTarget)) {
-    Fail 'could not find remote-control settings section visibility gate in extracted assets'
+  if ([string]::IsNullOrWhiteSpace($computerUseSetupTarget)) {
+    Fail 'could not find Computer Use setup gate in extracted assets'
   }
 
   Write-Log "fast-mode patch target: $fastModeTarget"
@@ -1252,10 +1215,7 @@ function Find-PatchTargets {
   Write-Log "desktop browser-use receiver patch target: $desktopFeatureMainTarget"
   Write-Log "computer-use availability patch target: $computerUseAvailabilityTarget"
   Write-Log "computer-use install-flow patch target: $computerUseInstallFlowTarget"
-  Write-Log "computer-use mobile setup patch target: $computerUseMobileSetupTarget"
-  Write-Log "codex mobile setup-flow auth fallback target: $codexMobileSetupFlowTarget"
-  Write-Log "remote-control main auth fallback target: $remoteControlMainTarget"
-  Write-Log "remote-control settings visibility patch target: $remoteConnectionVisibilityTarget"
+  Write-Log "computer-use setup patch target: $computerUseSetupTarget"
 
   return [pscustomobject]@{
     FastMode = $fastModeTarget
@@ -1273,10 +1233,7 @@ function Find-PatchTargets {
     DesktopFeatureMain = $desktopFeatureMainTarget
     ComputerUseAvailability = $computerUseAvailabilityTarget
     ComputerUseInstallFlow = $computerUseInstallFlowTarget
-    ComputerUseMobileSetup = $computerUseMobileSetupTarget
-    CodexMobileSetupFlow = $codexMobileSetupFlowTarget
-    RemoteControlMain = $remoteControlMainTarget
-    RemoteConnectionVisibility = $remoteConnectionVisibilityTarget
+    ComputerUseSetup = $computerUseSetupTarget
   }
 }
 
@@ -1341,10 +1298,7 @@ function Invoke-PatchAppAsar {
   $computerUseArgs = @(
     [string]$targets.ComputerUseAvailability
     [string]$targets.ComputerUseInstallFlow
-    [string]$targets.ComputerUseMobileSetup
-    $(if ([string]::IsNullOrWhiteSpace($targets.CodexMobileSetupFlow)) { '__none__' } else { [string]$targets.CodexMobileSetupFlow })
-    [string]$targets.RemoteControlMain
-    [string]$targets.RemoteConnectionVisibility
+    [string]$targets.ComputerUseSetup
   )
   $computerUse = Invoke-NodePatcher $nodePath $patchers.ComputerUse $computerUseArgs
   Write-Log "computer-use gate patch result: $computerUse"
@@ -1580,7 +1534,7 @@ function Add-LocalMarketplace {
   $dest = Join-Path (Join-Path $env:USERPROFILE '.codex\marketplaces') $Name
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dest) | Out-Null
   Write-Log "copying local marketplace: $Source -> $dest"
-  & robocopy.exe $Source $dest /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
+  & robocopy.exe $Source $dest /MIR /R:2 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
   if ($LASTEXITCODE -gt 7) {
     Fail "robocopy marketplace failed with exit code $LASTEXITCODE"
   }
@@ -1732,7 +1686,7 @@ setTimeout(() => server.close(() => process.exit(0)), 15000).unref();
     $wireTier = $null
     $codexJob = Start-Job -ScriptBlock {
       param([string]$CodexPath, [string]$BaseUrlConfig)
-      & $CodexPath exec --json --skip-git-repo-check -c $BaseUrlConfig -c 'service_tier="fast"' -c 'model_reasoning_effort="low"' 'wire capture only' 2>&1 | Out-Null
+      & $CodexPath exec --json --skip-git-repo-check -c 'model_provider="openai"' -c $BaseUrlConfig -c 'service_tier="fast"' -c 'model_reasoning_effort="low"' 'wire capture only' 2>&1 | Out-Null
     } -ArgumentList $codex, $baseUrlConfig
 
     $requestDeadline = (Get-Date).AddSeconds(25)
@@ -1827,6 +1781,7 @@ function Cleanup-WindowsSdk {
   }
 }
 
+$OutputRoot = Resolve-OutputRoot -Candidate $OutputRoot -WasExplicit $OutputRootWasExplicit
 $sourceApp = Find-CodexAppPath
 $sourcePackageRoot = Get-PackageRoot $sourceApp
 $packageShortId = Get-PackageShortId $sourcePackageRoot
