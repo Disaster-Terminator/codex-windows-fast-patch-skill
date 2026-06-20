@@ -41,7 +41,7 @@ Do not run it on macOS. A macOS version needs a separate workflow for the Codex 
 - `scripts/patch-remote-control-windows-msix.ps1`: Phone remote-control MSIX / ASAR patch and marker verification reference implementation.
 - `scripts/patch-remote-control-asar.cjs`: Phone remote-control Electron bundle patcher used by the MSIX script.
 - `scripts/install-computer-use-local.ps1`: Windows Computer Use local compatibility reference implementation.
-- `scripts/sync-codex-provider-history.ps1`: Sync local conversation provider metadata so conversations hidden after a `model_provider` switch reappear in the official list; it does not modify `config.toml` or workspace/project roots by default.
+- `scripts/sync-codex-provider-history.ps1`: Sync local conversation provider metadata so conversations hidden after a `model_provider` switch reappear in the official list; it also reports and can optionally repair missing restored-thread `cwd` values. It does not modify `config.toml` or workspace/project roots by default.
 - `scripts/install-model-instructions-file.ps1`: Optional installer for the bundled `model_instructions_file` prompt asset.
 - `scripts/manage-codex-backups.ps1`: Backup manager for local Codex config, MCP, skills, and marketplaces.
 - `scripts/update-skill-from-github.ps1`: Best-effort self-update script that syncs the latest GitHub version before use.
@@ -89,7 +89,7 @@ The current Codex Desktop session can usually repair these without another agent
 - Chrome / browser_use helper paths, plugin cache, or native-host files are broken.
 - Plugin marketplace config is broken, or `codex plugin list` fails because of marketplace manifests.
 - A local marketplace is missing `.agents\plugins\marketplace.json`.
-- Old local conversations disappear after switching `model_provider` / API config, but `sessions`, `archived_sessions`, or `state_5.sqlite` still contain the data. Use provider history sync first; this does not require an MSIX reinstall.
+- Old local conversations disappear after switching `model_provider` / API config, but `sessions`, `archived_sessions`, or `state_5.sqlite` still contain the data. Use provider history sync first; this does not require an MSIX reinstall. If restored threads then show a missing working directory banner, use `-RepairMissingCwd` to repoint only missing `cwd` values to an existing fallback directory.
 - You only need backup/restore work or the optional custom model instructions setup.
 - Phone remote control already pairs, but phone-created turns hit the wrong model API endpoint. Treat this as a post-pairing configuration diagnosis: inspect the actual request URL and current config before changing anything.
 
@@ -115,7 +115,7 @@ Expected verification after a full run:
 - Desktop logs show `browser_use_availability_resolved` with `available=true` and `reason=local-patched` when browser use is part of the repair.
 - If Chrome control is required, `codex plugin list` shows `chrome@openai-bundled` as `installed, enabled`, the native messaging host manifest points to existing files, and a smoke test can read a controlled tab title such as `Example Domain`.
 - If phone remote control is repaired, Connections shows the phone setup path, QR appears, phone scan does not report an expired Codex environment, native logs show remote-control WebSocket ping/pong/ack, and phone-created turns reach Desktop.
-- If conversation visibility is repaired, `sync-codex-provider-history.ps1` shows App/legacy SQLite stores and readable rollouts aligned to the current `model_provider`, logs `config.toml sha256 unchanged`, official Desktop conversations reappear, and no empty project groups are introduced.
+- If conversation visibility is repaired, `sync-codex-provider-history.ps1` shows App/legacy SQLite stores and readable rollouts aligned to the current `model_provider`, logs `config.toml sha256 unchanged`, official Desktop conversations reappear, restored conversations can accept new input, and no empty project groups are introduced.
 
 ## Backup Management
 

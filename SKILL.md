@@ -199,6 +199,7 @@ This workflow is based on the same proven mechanism used by reference projects s
 - App SQLite store: `$env:USERPROFILE\.codex\sqlite\state_5.sqlite`
 - Legacy CLI SQLite store: `$env:USERPROFILE\.codex\state_5.sqlite`
 - Missing thread rows from the legacy CLI store into the newer App store when the App store is missing rows that still exist in the legacy store.
+- Existing thread `cwd` values. If a restored conversation opens but shows "current working directory is missing" / `当前工作目录缺失`, the provider sync succeeded but the old thread points at a deleted workspace. Do not sync deleted rollout `cwd` values back into SQLite; either restore the original project directory or repair missing `cwd` values to a known existing fallback directory.
 
 Before changing anything, run a dry run:
 
@@ -213,12 +214,20 @@ Get-Process Codex -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '
 powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\skills\codex-windows-fast-patch\scripts\sync-codex-provider-history.ps1"
 ```
 
+If conversations reappear but one or more restored threads show `当前工作目录缺失`, first confirm the dry-run `missing cwd before` report. To make those conversations usable without recreating every old project directory, stop Codex Desktop and repair only missing `cwd` values to an existing fallback workspace:
+
+```powershell
+Get-Process Codex -ErrorAction SilentlyContinue | Where-Object { $_.Path -like 'C:\Program Files\WindowsApps\OpenAI.Codex_*\app\Codex.exe' } | Stop-Process -Force
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\skills\codex-windows-fast-patch\scripts\sync-codex-provider-history.ps1" -RepairMissingCwd -FallbackCwd "$env:USERPROFILE\Documents\Codex"
+```
+
 Guardrails:
 
 - Do not modify `config.toml`; the script checks the file hash before and after each run and fails if it changes.
 - Do not install or launch Codex++, codex-provider-sync, or codex-threadripper for this workflow. They are references only.
 - Do not patch ASAR or inject a floating session list for this symptom. A Codex++-style floating panel can show sessions but is not the official sidebar recovery mechanism and can introduce UI/encoding bugs.
 - Do not sync `.codex-global-state.json` workspace/project roots by default. Doing so can expose many historical `cwd` values as empty project groups in the Desktop sidebar.
+- Do not treat missing `cwd` as provider-sync failure. It means the conversation is visible but the old workspace path no longer exists. Repair only SQLite `cwd` metadata or restore the actual project folder; do not expand project roots to paper over it.
 - Backups are written under `$env:USERPROFILE\.codex\backups_state\provider-sync-agent\<timestamp>` before SQLite or rollout writes.
 - One unreadable or empty rollout first line may be skipped; treat that as a residual data issue, not a failure if SQLite and readable rollout counts align and the official sidebar shows the expected conversations.
 
@@ -229,6 +238,7 @@ Success criteria:
 - Rollout first-line provider counts under `sessions` and `archived_sessions` match the target provider for readable rollouts.
 - `config.toml sha256 unchanged` is logged.
 - Codex Desktop's official sidebar shows the recovered historical conversations after restart.
+- Restored conversations can be continued, or any missing `cwd` rows are explicitly repaired to an existing fallback directory with `-RepairMissingCwd`.
 - The Projects/workspace area does not gain new empty project groups as a side effect.
 
 ## Important Guardrails

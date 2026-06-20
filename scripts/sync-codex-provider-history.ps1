@@ -3,6 +3,8 @@ param(
   [string]$CodexHome = (Join-Path $env:USERPROFILE '.codex'),
   [string]$Provider,
   [string]$BackupRoot,
+  [switch]$RepairMissingCwd,
+  [string]$FallbackCwd,
   [int]$BusyTimeoutMs = 10000
 )
 
@@ -38,6 +40,25 @@ def log(message):
 
 def read_text(path):
     return path.read_text(encoding="utf-8", errors="replace")
+
+def normalize_windows_path(path_text):
+    if isinstance(path_text, str) and path_text.startswith("\\\\?\\"):
+        return path_text[4:]
+    return path_text
+
+def path_exists(path_text):
+    if not isinstance(path_text, str) or not path_text.strip():
+        return False
+    try:
+        return pathlib.Path(normalize_windows_path(path_text)).exists()
+    except Exception:
+        return False
+
+def compact_title(title, limit=120):
+    if not isinstance(title, str):
+        return title
+    title = title.replace("\r", " ").replace("\n", " ")
+    return title if len(title) <= limit else title[:limit] + "..."
 
 def current_provider(codex_home, override):
     if override:
@@ -119,7 +140,7 @@ def scan_rollouts(codex_home, target):
             counts[(bucket, provider)] = counts.get((bucket, provider), 0) + 1
             thread_id = payload.get("id")
             cwd = payload.get("cwd")
-            if isinstance(thread_id, str) and thread_id and isinstance(cwd, str) and cwd.strip():
+            if isinstance(thread_id, str) and thread_id and isinstance(cwd, str) and cwd.strip() and path_exists(cwd):
                 cwd_by_id[thread_id] = cwd
             try:
                 text = path.read_text(encoding="utf-8", errors="replace")
@@ -193,6 +214,89 @@ def update_sqlite(db_path, target, user_event_ids, cwd_by_id, busy_timeout_ms):
                     ).rowcount
         con.commit()
         return {"provider_rows": provider_rows, "user_event_rows": user_rows, "cwd_rows": cwd_rows}
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+def missing_cwd_rows(db_path, limit=20):
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    con.row_factory = sqlite3.Row
+    try:
+        if "cwd" not in table_columns(con, "threads"):
+            return []
+        rows = []
+        for row in con.execute(
+            "select id, title, cwd, archived, model_provider from threads "
+            "where coalesce(cwd,'') <> '' order by updated_at desc"
+        ):
+            if not path_exists(row["cwd"]):
+                rows.append({
+                    "id": row["id"],
+                    "title": compact_title(row["title"]),
+                    "cwd": normalize_windows_path(row["cwd"]),
+                    "archived": row["archived"],
+                    "model_provider": row["model_provider"],
+                })
+                if len(rows) >= limit:
+                    break
+        return rows
+    finally:
+        con.close()
+
+def missing_cwd_report(db_paths):
+    report = {}
+    for db_path in db_paths:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        con.row_factory = sqlite3.Row
+        try:
+            if "cwd" not in table_columns(con, "threads"):
+                report[str(db_path)] = {"missing": 0, "samples": []}
+                continue
+            missing = 0
+            samples = []
+            for row in con.execute(
+                "select id, title, cwd, archived, model_provider from threads "
+                "where coalesce(cwd,'') <> '' order by updated_at desc"
+            ):
+                if path_exists(row["cwd"]):
+                    continue
+                missing += 1
+                if len(samples) < 10:
+                    samples.append({
+                        "id": row["id"],
+                        "title": compact_title(row["title"]),
+                        "cwd": normalize_windows_path(row["cwd"]),
+                        "archived": row["archived"],
+                        "model_provider": row["model_provider"],
+                    })
+            report[str(db_path)] = {"missing": missing, "samples": samples}
+        finally:
+            con.close()
+    return report
+
+def repair_missing_cwd(db_path, fallback_cwd, busy_timeout_ms):
+    fallback_cwd = str(pathlib.Path(fallback_cwd).resolve())
+    con = sqlite3.connect(db_path, timeout=busy_timeout_ms / 1000)
+    con.row_factory = sqlite3.Row
+    try:
+        con.execute(f"pragma busy_timeout={int(busy_timeout_ms)}")
+        if "cwd" not in table_columns(con, "threads"):
+            return {"missing_before": 0, "cwd_rows": 0}
+        rows = list(con.execute(
+            "select id, cwd from threads where coalesce(cwd,'') <> '' order by updated_at desc"
+        ))
+        missing_ids = [row["id"] for row in rows if not path_exists(row["cwd"])]
+        con.execute("begin immediate")
+        cwd_rows = 0
+        for thread_id in missing_ids:
+            cwd_rows += con.execute(
+                "update threads set cwd = ? where id = ? and coalesce(cwd,'') <> ?",
+                (fallback_cwd, thread_id, fallback_cwd),
+            ).rowcount
+        con.commit()
+        return {"missing_before": len(missing_ids), "cwd_rows": cwd_rows, "fallback_cwd": fallback_cwd}
     except Exception:
         con.rollback()
         raise
@@ -292,6 +396,8 @@ def main():
     parser.add_argument("--provider")
     parser.add_argument("--backup-root", required=True)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--repair-missing-cwd", action="store_true")
+    parser.add_argument("--fallback-cwd")
     parser.add_argument("--busy-timeout-ms", type=int, default=10000)
     args = parser.parse_args()
 
@@ -306,12 +412,19 @@ def main():
     db_paths = state_db_paths(codex_home)
     counts_before = provider_counts_all(db_paths)
     rollout_counts_before, changes, read_errors, user_event_ids, cwd_by_id = scan_rollouts(codex_home, provider)
+    missing_cwd_before = missing_cwd_report(db_paths)
+    fallback_cwd = pathlib.Path(args.fallback_cwd or (pathlib.Path.home() / "Documents" / "Codex")).expanduser()
+    if args.repair_missing_cwd:
+        fallback_cwd = fallback_cwd.resolve()
+        if not fallback_cwd.exists() or not fallback_cwd.is_dir():
+            raise SystemExit(f"fallback cwd does not exist or is not a directory: {fallback_cwd}")
 
     log(f"target provider: {provider}")
     log(f"state dbs: {[str(path) for path in db_paths] or 'not found'}")
     log(f"sqlite before: {counts_before}")
     log(f"rollout before: {{ {', '.join(f'{k[0]}:{k[1]}={v}' for k, v in sorted(rollout_counts_before.items()))} }}")
     log(f"planned rollout first-line updates: {len(changes)}")
+    log(f"missing cwd before: {missing_cwd_before}")
     if read_errors:
         log(f"rollout read errors skipped: {len(read_errors)}")
 
@@ -326,6 +439,7 @@ def main():
             "config_sha256_before": config_hash_before,
             "db_paths": [str(path) for path in db_paths],
             "sqlite_counts_before": counts_before,
+            "missing_cwd_before": missing_cwd_before,
             "rollout_counts_before": {f"{k[0]}:{k[1]}": v for k, v in sorted(rollout_counts_before.items())},
             "rollout_changes": changes,
             "rollout_read_errors": read_errors,
@@ -344,15 +458,22 @@ def main():
         app_db = codex_home / "sqlite" / "state_5.sqlite"
         legacy_db = codex_home / "state_5.sqlite"
         sqlite_result["migration"] = migrate_missing_threads(app_db, legacy_db, provider, args.busy_timeout_ms)
+        if args.repair_missing_cwd:
+            sqlite_result["missing_cwd_repair"] = {
+                str(db): repair_missing_cwd(db, fallback_cwd, args.busy_timeout_ms)
+                for db in db_paths
+            }
 
     config_hash_after = hashlib.sha256(config.read_bytes()).hexdigest() if config.exists() else None
     if config_hash_before != config_hash_after:
         raise SystemExit("config.toml hash changed unexpectedly")
     counts_after = provider_counts_all(db_paths)
     rollout_counts_after, _, read_errors_after, _, _ = scan_rollouts(codex_home, provider)
+    missing_cwd_after = missing_cwd_report(db_paths)
     log(f"sqlite update: {sqlite_result}")
     log(f"sqlite after: {counts_after}")
     log(f"rollout after: {{ {', '.join(f'{k[0]}:{k[1]}={v}' for k, v in sorted(rollout_counts_after.items()))} }}")
+    log(f"missing cwd after: {missing_cwd_after}")
     log(f"config.toml sha256 unchanged: {config_hash_after}")
     if backup_dir:
         log(f"backup: {backup_dir}")
@@ -376,6 +497,8 @@ try {
   )
   if ($Provider) { $argsList += @('--provider', $Provider) }
   if ($DryRun) { $argsList += '--dry-run' }
+  if ($RepairMissingCwd) { $argsList += '--repair-missing-cwd' }
+  if ($FallbackCwd) { $argsList += @('--fallback-cwd', $FallbackCwd) }
   Write-Log "using codex home: $CodexHome"
   & $python.Source @argsList
   if ($LASTEXITCODE -ne 0) {
