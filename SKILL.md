@@ -1,11 +1,11 @@
 ---
 name: codex-windows-fast-patch
-description: Reapply and repair Windows Codex Desktop after Store upgrades, including Fast Mode request/UI gates, locale i18n, plugin UI gates, Chrome/browser_use gates, Goal command gates, Windows Computer Use availability gates and plugin/runtime repair, phone remote-control pairing under third-party/API-key main app usage, Desktop dynamicTools/inputSchema thread-start schema drift, local conversation visibility recovery after model_provider switches, ASAR integrity repair, signing/installing patched MSIX packages, SDK cleanup, Fast Mode wire verification, local plugin marketplace registration, and optional custom model_instructions_file setup.
+description: Reapply and repair Windows Codex Desktop after Store upgrades, including Fast Mode request/UI gates, locale i18n, plugin UI gates, Chrome/browser_use gates, Goal command gates, Windows Computer Use availability gates and plugin/runtime repair, phone remote-control pairing under third-party/API-key main app usage, Desktop dynamicTools/inputSchema thread-start schema drift, local conversation visibility recovery after model_provider switches, restored-conversation missing-cwd continuation repair, ASAR integrity repair, signing/installing patched MSIX packages, SDK cleanup, Fast Mode wire verification, local plugin marketplace registration, and optional custom model_instructions_file setup.
 ---
 
 # Codex Windows Fast Patch
 
-Use this skill when the user says Codex Desktop was upgraded and the Fast Mode / Plugins / Goal patch disappeared, asks to repatch Codex on Windows, asks to verify whether Fast Mode is really being sent, asks to restore/register the local plugin marketplace, asks to enable Chrome browser use or Windows Computer Use in Codex Desktop, or asks to enable/repair phone remote control while keeping third-party/API-key model access. Also use it when the language/locale setting reverts after restart, browser or plugin entries are hidden by availability gates, the Computer Control settings page shows "Any App" / "任意应用" as disabled by organization or unavailable in the current region, a Computer Use task reports native pipe, bundled plugin cache, helper path, package import, or runtime initialization errors, phone remote-control QR pairing spins/fails, post-pairing phone-created turns hit the wrong model API endpoint, Desktop new-chat/thread start fails with `missing field inputSchema`, local conversations disappear after switching `model_provider` / API account, or the user explicitly asks to configure the bundled custom `model_instructions_file` prompt asset.
+Use this skill when the user says Codex Desktop was upgraded and the Fast Mode / Plugins / Goal patch disappeared, asks to repatch Codex on Windows, asks to verify whether Fast Mode is really being sent, asks to restore/register the local plugin marketplace, asks to enable Chrome browser use or Windows Computer Use in Codex Desktop, or asks to enable/repair phone remote control while keeping third-party/API-key model access. Also use it when the language/locale setting reverts after restart, browser or plugin entries are hidden by availability gates, the Computer Control settings page shows "Any App" / "任意应用" as disabled by organization or unavailable in the current region, a Computer Use task reports native pipe, bundled plugin cache, helper path, package import, or runtime initialization errors, phone remote-control QR pairing spins/fails, post-pairing phone-created turns hit the wrong model API endpoint, Desktop new-chat/thread start fails with `missing field inputSchema`, local conversations disappear after switching `model_provider` / API account, restored conversations are visible but cannot continue because the current working directory is missing, or the user explicitly asks to configure the bundled custom `model_instructions_file` prompt asset.
 
 ## Platform Compatibility
 
@@ -53,7 +53,7 @@ Before choosing the full MSIX repack path, identify whether the current failure 
 - Use the Computer Use Only workflow first when evidence points to a local plugin/runtime problem: `codex plugin list` marketplace errors, missing `.agents\plugins\marketplace.json`, missing or partial `openai-bundled` plugin files, `bundled_plugins_marketplace_resolve_failed`, `EBUSY` on bundled plugin files, native pipe unavailable, `missing-helper-path`, stale Chrome native messaging host paths, bundled plugin cache drift, Chrome/browser cache link drift, stale `SKY_CUA_NATIVE_PIPE` config, `@oai/sky` import errors, or `setupComputerUseRuntime` import failure. This class does not require an MSIX uninstall/reinstall unless a later check also proves a Desktop gate is still closed.
 - Use the Phone Remote Control workflow when the user needs mobile pairing/control, the Connections page hides the phone setup card, the QR dialog spins, remote-control setup jumps to ChatGPT auth, the Allow dialog fails, the phone says the Codex environment version expired, or phone-created turns reach Desktop but send model requests to the wrong API endpoint.
 - Use the Missing inputSchema decision workflow when Codex Desktop cannot create a new conversation or local task and the newest Desktop log reports `method=thread/start` with the phrase `missing field inputSchema`. Do not assume this is always MCP. First compare CLI/app-server smoke tests against Desktop logs and inspect whether Desktop is sending non-null app dynamic tools. If the failure follows a suspect MCP server, isolate MCP. If CLI thread start succeeds while Desktop UI fails and extracted ASAR has `webview\assets\app-server-dynamic-tools-*.js` returning a namespace-wrapped `dynamicTools` object, use the Dynamic Tools Schema workflow. Do not run Phone Remote Control or Computer Use repair for this symptom unless separate evidence points there.
-- Use the Provider History Sync workflow when old conversations disappear from the official Desktop sidebar after the user changes `model_provider`, API account, or provider config, but local `sessions`, `archived_sessions`, or `state_5.sqlite` data still exists. This workflow is data-layer repair; it does not require Codex++, does not patch ASAR, and must not modify `config.toml`.
+- Use the Provider History Sync workflow when old conversations disappear from the official Desktop sidebar after the user changes `model_provider`, API account, or provider config, but local `sessions`, `archived_sessions`, or `state_5.sqlite` data still exists. Also use it when the conversations reappear but opening/continuing one fails with `当前工作目录缺失`, `current working directory missing`, or `invalid codex request` caused by a missing historical `cwd`. This workflow is data-layer repair; it does not require Codex++, does not patch ASAR, and must not modify `config.toml`.
 - If the user asks for Phone Remote Control and ordinary Desktop features in the same repair, patch Phone Remote Control first, then verify Fast Mode/browser/Chrome/Computer Use. If the remote-control MSIX install disturbs Computer Use or Chrome native-host state, immediately run the Computer Use Only workflow and re-run `-StrictVerifyOnly`.
 - Do not infer that a new `resources\codex.exe` PE file means `app.asar` is gone or that Computer Use needs binary patching. Inspect the current package resources first. If `app.asar` still exists and the symptom is a plugin/runtime import or cache failure, run `scripts\install-computer-use-local.ps1` before considering MSIX or binary changes.
 - After a Computer Use-only repair, always run `scripts\install-computer-use-local.ps1 -StrictVerifyOnly`. Treat `client import ok` plus `helper transport ok` as the local repair success signal.
@@ -193,12 +193,21 @@ Cleanup policy: successful dynamic-tools script runs delete generated MSIX stagi
 
 Use this targeted workflow when Codex Desktop local conversations disappear after switching `model_provider`, API account, or provider config, while the actual local history files still exist. The root cause is usually that Codex filters the official sidebar by the active provider bucket; older thread rows and rollout metadata remain under a previous provider.
 
+Also use this workflow for the second-stage failure where recovered conversations are visible in the official sidebar but cannot be continued because Desktop reports the working directory is missing. In that case the provider bucket may already be correct; the durable source of truth can still point at an old `session_meta.payload.cwd` directory that no longer exists.
+
 This workflow is based on the same proven mechanism used by reference projects such as `codex-provider-sync` and `codex-threadripper`, but it does not install or require those tools. It reads the current provider from `config.toml`, then aligns provider metadata in local history stores:
 
 - `sessions` and `archived_sessions` rollout JSONL first line: `session_meta.payload.model_provider`
 - App SQLite store: `$env:USERPROFILE\.codex\sqlite\state_5.sqlite`
 - Legacy CLI SQLite store: `$env:USERPROFILE\.codex\state_5.sqlite`
 - Missing thread rows from the legacy CLI store into the newer App store when the App store is missing rows that still exist in the legacy store.
+- Missing historical `cwd` directories referenced by rollout first lines, when explicitly requested with `-RepairMissingCwdDirs`.
+
+Important source-of-truth details:
+
+- Codex 26.609+ can rebuild `state_5.sqlite` from rollout JSONL on startup. Treat rollout first-line `session_meta.payload` as durable metadata, not the App SQLite row alone.
+- Do not repair `当前工作目录缺失` by changing only one SQLite store. That can make the UI look fixed until restart, then backfill or rollout reads can reintroduce the old value.
+- Prefer recreating the original missing `cwd` directory as an empty directory before rewriting historical metadata. This keeps the rollout history intact and was verified to fix visible-but-uncontinuable restored conversations.
 
 Before changing anything, run a dry run:
 
@@ -206,12 +215,27 @@ Before changing anything, run a dry run:
 powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\skills\codex-windows-fast-patch\scripts\sync-codex-provider-history.ps1" -DryRun
 ```
 
-If the dry run shows mismatched provider buckets, close or stop Codex Desktop and run the sync:
+Read the dry-run output before selecting the write path:
+
+- If it shows mismatched provider buckets, close or stop Codex Desktop and run the sync.
+- If the sidebar already shows recovered conversations but continuing a thread fails with missing working directory, look at `missing rollout cwd dirs before`. If missing cwd entries are listed, use `-RepairMissingCwdDirs`.
+- If the missing cwd paths are outside the current user profile, do not create them by default. Review the paths first; pass `-AllowCwdOutsideUserProfile` only when they are expected local paths.
+
+Provider sync write path:
 
 ```powershell
 Get-Process Codex -ErrorAction SilentlyContinue | Where-Object { $_.Path -like 'C:\Program Files\WindowsApps\OpenAI.Codex_*\app\Codex.exe' } | Stop-Process -Force
 powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\skills\codex-windows-fast-patch\scripts\sync-codex-provider-history.ps1"
 ```
+
+Missing cwd repair path:
+
+```powershell
+Get-Process Codex -ErrorAction SilentlyContinue | Where-Object { $_.Path -like 'C:\Program Files\WindowsApps\OpenAI.Codex_*\app\Codex.exe' } | Stop-Process -Force
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\skills\codex-windows-fast-patch\scripts\sync-codex-provider-history.ps1" -RepairMissingCwdDirs
+```
+
+This creates only the missing directories referenced by rollout first lines. It does not rewrite those `cwd` values, and it still verifies that `config.toml` is unchanged. By default it skips cwd paths outside `$env:USERPROFILE` to avoid creating unexpected roots on other drives or network shares.
 
 Guardrails:
 
@@ -219,6 +243,7 @@ Guardrails:
 - Do not install or launch Codex++, codex-provider-sync, or codex-threadripper for this workflow. They are references only.
 - Do not patch ASAR or inject a floating session list for this symptom. A Codex++-style floating panel can show sessions but is not the official sidebar recovery mechanism and can introduce UI/encoding bugs.
 - Do not sync `.codex-global-state.json` workspace/project roots by default. Doing so can expose many historical `cwd` values as empty project groups in the Desktop sidebar.
+- Do not default to rewriting rollout `cwd` or forcing all missing cwd values to a fallback directory such as `Documents\Codex`. First try restoring the original missing directory path. Rewrite historical `cwd` only as a separately backed-up last resort after directory restoration fails.
 - Backups are written under `$env:USERPROFILE\.codex\backups_state\provider-sync-agent\<timestamp>` before SQLite or rollout writes.
 - One unreadable or empty rollout first line may be skipped; treat that as a residual data issue, not a failure if SQLite and readable rollout counts align and the official sidebar shows the expected conversations.
 
@@ -229,6 +254,7 @@ Success criteria:
 - Rollout first-line provider counts under `sessions` and `archived_sessions` match the target provider for readable rollouts.
 - `config.toml sha256 unchanged` is logged.
 - Codex Desktop's official sidebar shows the recovered historical conversations after restart.
+- If the symptom was a visible restored conversation that could not continue, `missing rollout cwd dirs after` reports zero or only reviewed/skipped paths, and the affected conversation can send a new turn after Desktop restart.
 - The Projects/workspace area does not gain new empty project groups as a side effect.
 
 ## Important Guardrails

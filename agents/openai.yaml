@@ -1,8 +1,8 @@
 interface:
   display_name: "Codex Windows Fast Patch"
-  short_description: "Repatch Windows Codex Desktop gates, plugins, Computer Use, phone remote control, and dynamicTools schema drift."
+  short_description: "Repatch Windows Codex Desktop gates, plugins, Computer Use, phone remote control, dynamicTools drift, and local history recovery."
   brand_color: "#2563EB"
-  default_prompt: "Use $codex-windows-fast-patch to inspect and repair Codex Desktop Fast Mode, locale, Chrome/browser_use, plugin marketplace, Computer Use gates/runtime, phone remote-control setup, missing inputSchema/dynamicTools thread-start failures, and optional model_instructions_file setup on Windows."
+  default_prompt: "Use $codex-windows-fast-patch to inspect and repair Codex Desktop Fast Mode, locale, Chrome/browser_use, plugin marketplace, Computer Use gates/runtime, phone remote-control setup, missing inputSchema/dynamicTools thread-start failures, local conversation provider/cwd recovery, and optional model_instructions_file setup on Windows."
 
 policy:
   allow_implicit_invocation: true
