@@ -1595,67 +1595,57 @@ function Get-ManifestPublisher {
   return $manifest.Package.Identity.Publisher
 }
 
-function Ensure-CertificateDrive {
-  if (Get-PSDrive -Name Cert -ErrorAction SilentlyContinue) {
-    return
-  }
-  if (-not (Get-PSProvider -PSProvider Certificate -ErrorAction SilentlyContinue)) {
-    try {
-      Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
-    } catch {
-      Write-Log "warning: failed to import Microsoft.PowerShell.Security: $($_.Exception.Message)"
-    }
-  }
-  if (Get-PSProvider -PSProvider Certificate -ErrorAction SilentlyContinue) {
-    New-PSDrive -Name Cert -PSProvider Certificate -Root '\' -ErrorAction Stop | Out-Null
-  }
-  if (-not (Get-PSDrive -Name Cert -ErrorAction SilentlyContinue)) {
-    Fail 'PowerShell Certificate provider is unavailable; cannot create or trust the MSIX signing certificate'
-  }
-}
-
 function Get-OrCreateSigningCertificate {
   param([string]$Publisher)
-  Ensure-CertificateDrive
-  $codeSigningOid = '1.3.6.1.5.5.7.3.3'
-  $cert = Get-ChildItem Cert:\CurrentUser\My -ErrorAction SilentlyContinue |
-    Where-Object {
-      if ($_.Subject -ne $Publisher -or -not $_.HasPrivateKey) {
-        return $false
-      }
-      $eku = $_.Extensions | Where-Object { $_ -is [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension] } | Select-Object -First 1
-      if (-not $eku) {
-        return $true
-      }
-      foreach ($oid in $eku.EnhancedKeyUsages) {
-        if ($oid.Value -eq $codeSigningOid) {
-          return $true
-        }
-      }
-      return $false
-    } |
-    Sort-Object NotAfter -Descending |
-    Select-Object -First 1
-  if ($cert) {
-    Write-Log "using existing signing certificate: $($cert.Thumbprint)"
-    return $cert
+  Write-Log "creating file-backed signing certificate: $Publisher"
+  $rsa = [System.Security.Cryptography.RSA]::Create(2048)
+  $request = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
+    [System.Security.Cryptography.X509Certificates.X500DistinguishedName]::new($Publisher),
+    $rsa,
+    [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+    [System.Security.Cryptography.RSASignaturePadding]::Pkcs1
+  )
+  $request.CertificateExtensions.Add(
+    [System.Security.Cryptography.X509Certificates.X509BasicConstraintsExtension]::new($false, $false, 0, $true)
+  )
+  $request.CertificateExtensions.Add(
+    [System.Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new(
+      [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::DigitalSignature,
+      $true
+    )
+  )
+  $eku = [System.Security.Cryptography.OidCollection]::new()
+  [void]$eku.Add([System.Security.Cryptography.Oid]::new('1.3.6.1.5.5.7.3.3', 'Code Signing'))
+  $request.CertificateExtensions.Add(
+    [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]::new($eku, $true)
+  )
+  $cert = $request.CreateSelfSigned((Get-Date).AddMinutes(-5), (Get-Date).AddYears(5))
+  $certWithKey = if ($cert.HasPrivateKey) { $cert } else { $cert.CopyWithPrivateKey($rsa) }
+  $password = [guid]::NewGuid().ToString('N')
+  $basePath = Join-Path $env:TEMP ('codex-msix-signing-' + [guid]::NewGuid().ToString('N'))
+  $pfxPath = "$basePath.pfx"
+  $cerPath = "$basePath.cer"
+  [System.IO.File]::WriteAllBytes($pfxPath, $certWithKey.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx, $password))
+  [System.IO.File]::WriteAllBytes($cerPath, $certWithKey.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert))
+  return [pscustomobject]@{
+    Thumbprint = $certWithKey.Thumbprint
+    PfxPath = $pfxPath
+    CerPath = $cerPath
+    Password = $password
   }
-  Write-Log "creating signing certificate: $Publisher"
-  return New-SelfSignedCertificate -Type CodeSigningCert -Subject $Publisher -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddYears(5)
 }
 
 function Trust-SigningCertificate {
-  param([System.Security.Cryptography.X509Certificates.X509Certificate2]$Cert)
-  Ensure-CertificateDrive
-  $tempCert = Join-Path $env:TEMP ('codex-msix-signing-' + $Cert.Thumbprint + '.cer')
-  Export-Certificate -Cert $Cert -FilePath $tempCert -Force | Out-Null
-  Import-Certificate -FilePath $tempCert -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
-  Import-Certificate -FilePath $tempCert -CertStoreLocation Cert:\CurrentUser\TrustedPeople | Out-Null
-  if (Test-IsAdministrator) {
-    Import-Certificate -FilePath $tempCert -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
-    Import-Certificate -FilePath $tempCert -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null
+  param([psobject]$Cert)
+  Write-Log "trusting signing certificate: $($Cert.Thumbprint)"
+  & certutil.exe -user -addstore Root $Cert.CerPath | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    Fail "certutil failed while adding certificate to CurrentUser Root (exit code $LASTEXITCODE)"
   }
-  Remove-Item -LiteralPath $tempCert -Force -ErrorAction SilentlyContinue
+  & certutil.exe -user -addstore TrustedPeople $Cert.CerPath | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    Fail "certutil failed while adding certificate to CurrentUser TrustedPeople (exit code $LASTEXITCODE)"
+  }
 }
 
 function Invoke-MakeAppxPack {
@@ -1678,12 +1668,17 @@ function Invoke-SignPackage {
   param(
     [string]$SignTool,
     [string]$MsixPath,
-    [System.Security.Cryptography.X509Certificates.X509Certificate2]$Cert
+    [psobject]$Cert
   )
   Write-Log 'signing MSIX'
-  & $SignTool sign /fd SHA256 /sha1 $Cert.Thumbprint $MsixPath
-  if ($LASTEXITCODE -ne 0) {
-    Fail "signtool sign failed with exit code $LASTEXITCODE"
+  try {
+    & $SignTool sign /fd SHA256 /f $Cert.PfxPath /p $Cert.Password $MsixPath
+    if ($LASTEXITCODE -ne 0) {
+      Fail "signtool sign failed with exit code $LASTEXITCODE"
+    }
+  } finally {
+    Remove-Item -LiteralPath $Cert.PfxPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $Cert.CerPath -Force -ErrorAction SilentlyContinue
   }
 }
 
