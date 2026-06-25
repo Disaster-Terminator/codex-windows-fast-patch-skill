@@ -1595,8 +1595,20 @@ function Get-ManifestPublisher {
   return $manifest.Package.Identity.Publisher
 }
 
+function Ensure-CertificateDrive {
+  if (Get-PSDrive -Name Cert -ErrorAction SilentlyContinue) {
+    return
+  }
+  Import-Module Microsoft.PowerShell.Security -ErrorAction SilentlyContinue
+  if (-not (Get-PSProvider -PSProvider Certificate -ErrorAction SilentlyContinue)) {
+    Fail 'PowerShell Certificate provider is unavailable; cannot create or trust the MSIX signing certificate'
+  }
+  New-PSDrive -Name Cert -PSProvider Certificate -Root '\' -ErrorAction Stop | Out-Null
+}
+
 function Get-OrCreateSigningCertificate {
   param([string]$Publisher)
+  Ensure-CertificateDrive
   $codeSigningOid = '1.3.6.1.5.5.7.3.3'
   $cert = Get-ChildItem Cert:\CurrentUser\My -ErrorAction SilentlyContinue |
     Where-Object {
@@ -1626,6 +1638,7 @@ function Get-OrCreateSigningCertificate {
 
 function Trust-SigningCertificate {
   param([System.Security.Cryptography.X509Certificates.X509Certificate2]$Cert)
+  Ensure-CertificateDrive
   $tempCert = Join-Path $env:TEMP ('codex-msix-signing-' + $Cert.Thumbprint + '.cer')
   Export-Certificate -Cert $Cert -FilePath $tempCert -Force | Out-Null
   Import-Certificate -FilePath $tempCert -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
