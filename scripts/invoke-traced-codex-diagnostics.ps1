@@ -5,6 +5,7 @@ param(
   [string[]]$Steps = @('Status', 'ComputerUseStrict'),
   [int]$DefaultTimeoutSeconds = 120,
   [int]$MsixDryRunTimeoutSeconds = 900,
+  [int]$FullRepatchTimeoutSeconds = 1800,
   [switch]$Force
 )
 
