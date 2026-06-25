@@ -245,7 +245,8 @@ if ($pkg) {
         '-File',
         (Join-Path $PSScriptRoot 'repatch-codex-windows.ps1'),
         '-SkipFastVerify',
-        '-SkipComputerUse'
+        '-SkipComputerUse',
+        '-SkipMarketplace'
       )
     }
     'InstallLatestPatchedMsix' {
