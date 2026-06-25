@@ -1785,8 +1785,23 @@ function Get-ManifestPublisher {
 
 function Get-OrCreateSigningCertificate {
   param([string]$Publisher)
-  $cert = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert -ErrorAction SilentlyContinue |
-    Where-Object { $_.Subject -eq $Publisher } |
+  $codeSigningOid = '1.3.6.1.5.5.7.3.3'
+  $cert = Get-ChildItem Cert:\CurrentUser\My -ErrorAction SilentlyContinue |
+    Where-Object {
+      if ($_.Subject -ne $Publisher -or -not $_.HasPrivateKey) {
+        return $false
+      }
+      $eku = $_.Extensions | Where-Object { $_ -is [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension] } | Select-Object -First 1
+      if (-not $eku) {
+        return $true
+      }
+      foreach ($oid in $eku.EnhancedKeyUsages) {
+        if ($oid.Value -eq $codeSigningOid) {
+          return $true
+        }
+      }
+      return $false
+    } |
     Sort-Object NotAfter -Descending |
     Select-Object -First 1
   if ($cert) {
