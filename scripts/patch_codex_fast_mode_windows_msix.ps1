@@ -1599,11 +1599,19 @@ function Ensure-CertificateDrive {
   if (Get-PSDrive -Name Cert -ErrorAction SilentlyContinue) {
     return
   }
-  Import-Module Microsoft.PowerShell.Security -ErrorAction SilentlyContinue
   if (-not (Get-PSProvider -PSProvider Certificate -ErrorAction SilentlyContinue)) {
+    try {
+      Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
+    } catch {
+      Write-Log "warning: failed to import Microsoft.PowerShell.Security: $($_.Exception.Message)"
+    }
+  }
+  if (Get-PSProvider -PSProvider Certificate -ErrorAction SilentlyContinue) {
+    New-PSDrive -Name Cert -PSProvider Certificate -Root '\' -ErrorAction Stop | Out-Null
+  }
+  if (-not (Get-PSDrive -Name Cert -ErrorAction SilentlyContinue)) {
     Fail 'PowerShell Certificate provider is unavailable; cannot create or trust the MSIX signing certificate'
   }
-  New-PSDrive -Name Cert -PSProvider Certificate -Root '\' -ErrorAction Stop | Out-Null
 }
 
 function Get-OrCreateSigningCertificate {
