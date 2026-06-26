@@ -14,6 +14,7 @@ param(
   [string]$LocalPluginMarketplaceName = 'openai-curated-local',
   [switch]$VerifyFastModeRequest,
   [switch]$OnlyBundledMarketplaceCopy,
+  [switch]$OnlyFastModeUi,
   [switch]$DryRun
 )
 
@@ -1378,6 +1379,24 @@ function Find-PatchTargets {
   }
 }
 
+function Find-FastModeUiPatchTarget {
+  param([string]$ExtractDir)
+
+  $assetsDir = Join-Path $ExtractDir 'webview\assets'
+  if (-not (Test-Path -LiteralPath $assetsDir -PathType Container)) {
+    Fail "assets directory not found in extracted asar: $assetsDir"
+  }
+
+  foreach ($candidate in (Get-ChildItem -LiteralPath $assetsDir -Filter 'use-service-tier-settings-*.js' -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)) {
+    $text = Get-Content -Raw -LiteralPath $candidate
+    if ($text.Contains('isServiceTierAllowed') -and $text.Contains('featureRequirements?.fast_mode')) {
+      return $candidate
+    }
+  }
+
+  Fail 'could not find patch target: fastModeUiTarget'
+}
+
 function Invoke-NodePatcher {
   param(
     [string]$NodePath,
@@ -1444,6 +1463,26 @@ function Invoke-PatchAppAsar {
     }
     if ($bundledMarketplaceCopy -eq 'already-patched') {
       Write-Log 'asar bundled marketplace copy patch already present'
+      return $false
+    }
+    Write-Log 'repacking app.asar'
+    Invoke-NpxAsar 'pack' $extractDir $newAsarPath
+    Copy-Item -LiteralPath $newAsarPath -Destination $asarPath -Force
+    return $true
+  }
+
+  if ($OnlyFastModeUi) {
+    $fastModeUiTarget = Find-FastModeUiPatchTarget $extractDir
+    Write-Log "fast-mode UI patch target: $fastModeUiTarget"
+    $fastUi = Invoke-NodePatcher $nodePath $patchers.FastUi @($fastModeUiTarget)
+    Write-Log "fast-mode UI patch result: $fastUi"
+
+    if ($DryRun) {
+      Write-Log 'dry run: fast-mode UI patch target validation completed; no package was changed'
+      return $false
+    }
+    if ($fastUi -eq 'already-patched') {
+      Write-Log 'asar fast-mode UI patch already present'
       return $false
     }
     Write-Log 'repacking app.asar'
@@ -1597,6 +1636,34 @@ function Get-ManifestPublisher {
 
 function Get-OrCreateSigningCertificate {
   param([string]$Publisher)
+  $certRoot = Join-Path $env:USERPROFILE '.codex\certs'
+  New-Item -ItemType Directory -Force -Path $certRoot | Out-Null
+  $safePublisher = ($Publisher -replace '[^A-Za-z0-9_.-]', '-').Trim('-')
+  if ([string]::IsNullOrWhiteSpace($safePublisher)) {
+    $safePublisher = 'codex-msix'
+  }
+  $pfxPath = Join-Path $certRoot "$safePublisher.pfx"
+  $cerPath = Join-Path $certRoot "$safePublisher.cer"
+  $passwordPath = Join-Path $certRoot "$safePublisher.password"
+
+  if ((Test-Path -LiteralPath $pfxPath -PathType Leaf) -and
+      (Test-Path -LiteralPath $cerPath -PathType Leaf) -and
+      (Test-Path -LiteralPath $passwordPath -PathType Leaf)) {
+    $password = [System.IO.File]::ReadAllText($passwordPath, [System.Text.UTF8Encoding]::new($false)).Trim()
+    $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($pfxPath, $password)
+    if ($cert.Subject -eq $Publisher -and $cert.HasPrivateKey) {
+      Write-Log "using file-backed signing certificate: $($cert.Thumbprint)"
+      return [pscustomobject]@{
+        Thumbprint = $cert.Thumbprint
+        PfxPath = $pfxPath
+        CerPath = $cerPath
+        Password = $password
+        Persistent = $true
+      }
+    }
+    Write-Log "warning: ignoring stale signing certificate for unexpected subject: $($cert.Subject)"
+  }
+
   Write-Log "creating file-backed signing certificate: $Publisher"
   $rsa = [System.Security.Cryptography.RSA]::Create(2048)
   $request = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
@@ -1622,16 +1689,15 @@ function Get-OrCreateSigningCertificate {
   $cert = $request.CreateSelfSigned((Get-Date).AddMinutes(-5), (Get-Date).AddYears(5))
   $certWithKey = if ($cert.HasPrivateKey) { $cert } else { $cert.CopyWithPrivateKey($rsa) }
   $password = [guid]::NewGuid().ToString('N')
-  $basePath = Join-Path $env:TEMP ('codex-msix-signing-' + [guid]::NewGuid().ToString('N'))
-  $pfxPath = "$basePath.pfx"
-  $cerPath = "$basePath.cer"
   [System.IO.File]::WriteAllBytes($pfxPath, $certWithKey.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx, $password))
   [System.IO.File]::WriteAllBytes($cerPath, $certWithKey.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert))
+  [System.IO.File]::WriteAllText($passwordPath, $password, [System.Text.UTF8Encoding]::new($false))
   return [pscustomobject]@{
     Thumbprint = $certWithKey.Thumbprint
     PfxPath = $pfxPath
     CerPath = $cerPath
     Password = $password
+    Persistent = $true
   }
 }
 
@@ -1677,8 +1743,10 @@ function Invoke-SignPackage {
       Fail "signtool sign failed with exit code $LASTEXITCODE"
     }
   } finally {
-    Remove-Item -LiteralPath $Cert.PfxPath -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $Cert.CerPath -Force -ErrorAction SilentlyContinue
+    if (-not $Cert.Persistent) {
+      Remove-Item -LiteralPath $Cert.PfxPath -Force -ErrorAction SilentlyContinue
+      Remove-Item -LiteralPath $Cert.CerPath -Force -ErrorAction SilentlyContinue
+    }
   }
 }
 

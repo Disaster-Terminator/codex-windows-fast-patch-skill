@@ -14,7 +14,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
   $OutputRoot = Join-Path $repoRoot 'artifacts\runs'
 }
-$validSteps = @('Status', 'Backup', 'ComputerUseStrict', 'ComputerUseRepairVerify', 'MsixDryRun', 'PatchDryRunKeepWork', 'FullRepatch', 'FullRepatchSkipFastVerify', 'TrustLatestPatchedMsixSignerLocalMachine', 'RemoveCodexAppxAllUsers', 'InstallLatestPatchedMsix')
+$validSteps = @('Status', 'Backup', 'ComputerUseStrict', 'ComputerUseRepairVerify', 'MsixDryRun', 'PatchDryRunKeepWork', 'FastUiDryRun', 'FastUiRepatch', 'FullRepatch', 'FullRepatchSkipFastVerify', 'TrustLatestPatchedMsixSignerLocalMachine', 'RemoveCodexAppxAllUsers', 'InstallLatestPatchedMsix')
 $Steps = @(
   foreach ($step in $Steps) {
     foreach ($part in ([string]$step -split ',')) {
@@ -226,6 +226,35 @@ if ($pkg) {
         '-DryRun',
         '-ForceRebuild',
         '-KeepWorkDir'
+      )
+    }
+    'FastUiDryRun' {
+      $results += Invoke-TracedCommand -Name $step -FilePath 'powershell.exe' -TimeoutSeconds $MsixDryRunTimeoutSeconds -Arguments @(
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        (Join-Path $PSScriptRoot 'patch_codex_fast_mode_windows_msix.ps1'),
+        '-DryRun',
+        '-ForceRebuild',
+        '-OnlyFastModeUi',
+        '-KeepWorkDir'
+      )
+    }
+    'FastUiRepatch' {
+      $results += Invoke-TracedCommand -Name $step -FilePath 'powershell.exe' -TimeoutSeconds $FullRepatchTimeoutSeconds -Arguments @(
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        (Join-Path $PSScriptRoot 'patch_codex_fast_mode_windows_msix.ps1'),
+        '-InstallPrerequisites',
+        '-Install',
+        '-ForceRebuild',
+        '-Launch',
+        '-CleanupWindowsSdkAfterInstall',
+        '-CleanupAfter',
+        '-OnlyFastModeUi'
       )
     }
     'FullRepatch' {
