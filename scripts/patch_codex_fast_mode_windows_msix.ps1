@@ -688,10 +688,12 @@ process.stdout.write(changed ? 'patched' : 'already-patched');
 
   Set-Content -LiteralPath $goalPatcherPath -Encoding UTF8 -Value @'
 const fs = require('node:fs');
-const [composerFile, slashFileArg] = process.argv.slice(2);
-const slashFile = slashFileArg || composerFile;
-const composerText = fs.readFileSync(composerFile, 'utf8');
-const slashText = fs.readFileSync(slashFile, 'utf8');
+const [composerFileArg, slashFileArg] = process.argv.slice(2);
+const hasComposerFile = composerFileArg && composerFileArg !== '__none__';
+const composerFile = hasComposerFile ? composerFileArg : null;
+const slashFile = slashFileArg && slashFileArg !== '__none__' ? slashFileArg : composerFile;
+const composerText = composerFile ? fs.readFileSync(composerFile, 'utf8') : '';
+const slashText = slashFile ? fs.readFileSync(slashFile, 'utf8') : '';
 
 const goalPatchedRe = /(\w+)=([A-Za-z_$][\w$]*)!==`cloud`(?:&&!?\w+)?,(\w+)=([^,]+),/;
 const currentSplitGoalPatchedRe = /(\w+)=([A-Za-z_$][\w$]*)!==`cloud`&&!\w+,(\w+)=([^,]+),(\w+)=([^,]+),/;
@@ -733,25 +735,27 @@ if (!nextSlash.includes(slashPatched) && !slashPatchedRe.test(nextSlash)) {
   }
 }
 
-if (goalOriginalRe.test(nextComposer)) {
-  nextComposer = nextComposer.replace(goalOriginalRe, (_match, goalGateVar, _statsigFn, _configAccessFn, _configVar, modeVar, hasGoalVar, hasGoalExpr) => `${goalGateVar}=${modeVar}!==\`cloud\`,${hasGoalVar}=${hasGoalExpr},`);
-  changedComposer = true;
-} else if (currentGoalOriginalRe.test(nextComposer)) {
-  nextComposer = nextComposer.replace(currentGoalOriginalRe, (_match, goalGateVar, _statsigFn, _configAccessFn, _configVar, modeVar, sideChatGuard = '', hasGoalVar, hasGoalExpr) => `${goalGateVar}=${modeVar}!==\`cloud\`${sideChatGuard},${hasGoalVar}=${hasGoalExpr},`);
-  changedComposer = true;
-} else if (!(goalPatchedRe.test(nextComposer) ||
-             currentSplitGoalPatchedRe.test(nextComposer) ||
-             currentGoalAlreadyOpenRe.test(nextComposer) ||
-             (goalCommandRe.test(nextComposer) && nextComposer.includes('threadGoalObjective')))) {
-  process.stderr.write('goal-patch-target-not-found\n');
-  process.exit(2);
+if (hasComposerFile) {
+  if (goalOriginalRe.test(nextComposer)) {
+    nextComposer = nextComposer.replace(goalOriginalRe, (_match, goalGateVar, _statsigFn, _configAccessFn, _configVar, modeVar, hasGoalVar, hasGoalExpr) => `${goalGateVar}=${modeVar}!==\`cloud\`,${hasGoalVar}=${hasGoalExpr},`);
+    changedComposer = true;
+  } else if (currentGoalOriginalRe.test(nextComposer)) {
+    nextComposer = nextComposer.replace(currentGoalOriginalRe, (_match, goalGateVar, _statsigFn, _configAccessFn, _configVar, modeVar, sideChatGuard = '', hasGoalVar, hasGoalExpr) => `${goalGateVar}=${modeVar}!==\`cloud\`${sideChatGuard},${hasGoalVar}=${hasGoalExpr},`);
+    changedComposer = true;
+  } else if (!(goalPatchedRe.test(nextComposer) ||
+               currentSplitGoalPatchedRe.test(nextComposer) ||
+               currentGoalAlreadyOpenRe.test(nextComposer) ||
+               (goalCommandRe.test(nextComposer) && nextComposer.includes('threadGoalObjective')))) {
+    process.stderr.write('goal-patch-target-not-found\n');
+    process.exit(2);
+  }
 }
 
 if (!changedComposer && !changedSlash) {
   process.stdout.write('already-patched');
   process.exit(0);
 }
-if (changedComposer) fs.writeFileSync(composerFile, nextComposer);
+if (changedComposer && composerFile) fs.writeFileSync(composerFile, nextComposer);
 if (changedSlash) fs.writeFileSync(slashFile, nextSlash);
 process.stdout.write('patched');
 '@
@@ -942,6 +946,10 @@ function patchSidebarAvailability(file) {
     /var ([A-Za-z_$][\w$]*)=`in_app_browser`,([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*),\(\{get:[A-Za-z_$][\w$]*\}\)=>\{let\{data:[A-Za-z_$][\w$]*\}=[A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*,[A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*\)\),[A-Za-z_$][\w$]*=[A-Za-z_$][\w$]*\?\.find\([A-Za-z_$][\w$]*=>[A-Za-z_$][\w$]*\.name===\1\);return [A-Za-z_$][\w$]*!=null&&[A-Za-z_$][\w$]*\?\.enabled!==!1\}\);/,
     'var $1=`in_app_browser`,$2=$3($4,()=>!0);'
   );
+  after = after.replace(
+    /([A-Za-z_$][\w$]*)=`in_app_browser`,([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*),\(\{get:[A-Za-z_$][\w$]*\}\)=>\{let\{data:([A-Za-z_$][\w$]*)\}=[\s\S]*?,[A-Za-z_$][\w$]*=\5\?\.find\([A-Za-z_$][\w$]*=>[A-Za-z_$][\w$]*\.name===\1\);return \5!=null&&[A-Za-z_$][\w$]*\?\.enabled!==!1\}\)/,
+    '$1=`in_app_browser`,$2=$3($4,()=>!0)'
+  );
   if (after === before &&
       !before.includes('a=t(n,()=>!0)') &&
       !before.includes('()=>!0')) {
@@ -954,15 +962,15 @@ function patchSidebarAvailability(file) {
 function patchDesktopFeatureSender(file) {
   const before = read(file);
   const patchedSenderFragment = 'inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,browserPane:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0,computerUse:';
-  const patchedSenderPattern = /inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,(linksDefaultInAppBrowser:[^,}]+,)?(localBackend:[^,}]+,)?browserPane:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0,computerUse:/;
+  const patchedSenderPattern = /inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,(defaultLinkOpenTargetPreference:[^,}]+,)?(linksDefaultInAppBrowser:[^,}]+,)?(localBackend:[^,}]+,)?browserPane:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0,computerUse:/;
   if (!before.includes('browser_use_availability_resolved') || !before.includes('electron-desktop-features-changed')) {
     process.stderr.write('browser-use-desktop-feature-sender-target-not-found\n');
     process.exit(2);
   }
 
   let after = before.replace(
-    /inAppBrowserUse:[^,}]+,inAppBrowserUseAllowed:[^,}]+,(linksDefaultInAppBrowser:[^,}]+,)?(localBackend:[^,}]+,)?browserPane:[^,}]+,externalBrowserUse:[^,}]+,externalBrowserUseAllowed:[^,}]+,computerUse:/,
-    'inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,$1$2browserPane:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0,computerUse:'
+    /inAppBrowserUse:[^,}]+,inAppBrowserUseAllowed:[^,}]+,(defaultLinkOpenTargetPreference:[^,}]+,)?(linksDefaultInAppBrowser:[^,}]+,)?(localBackend:[^,}]+,)?browserPane:[^,}]+,externalBrowserUse:[^,}]+,externalBrowserUseAllowed:[^,}]+,computerUse:/,
+    'inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,$1$2$3browserPane:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0,computerUse:'
   );
   after = after.replace(
     /browser_use_availability_resolved`,\{safe:\{available:[^,]+,platform:([^,]+),reason:[^,]+,release:([^}]+)\},sensitive:\{browserPane:[^}]+\}\}\)/,
@@ -1026,15 +1034,29 @@ if (text.includes(patchedMarker)) {
   process.exit(0);
 }
 
-const original = 'async function Bs(e,t){if(m.default.platform===`darwin`){await Ko(`ditto`,[`--noqtn`,e,t]);return}await f.default.cp(e,t,{recursive:!0,verbatimSymlinks:!0})}';
-const replacement = 'async function Bs(e,t){if(m.default.platform===`darwin`){await Ko(`ditto`,[`--noqtn`,e,t]);return}try{await f.default.cp(e,t,{recursive:!0,verbatimSymlinks:!0});return}catch(n){if(m.default.platform!==`win32`)throw n;L.warning(`codex_windows_bundled_marketplace_copy_fallback`,{safe:{},sensitive:{error:n,source:e,target:t}})}async function n(e,t){let r=await f.default.lstat(e);if(r.isDirectory()){await f.default.mkdir(t,{recursive:!0});for(let r of await f.default.readdir(e))await n((0,s.join)(e,r),(0,s.join)(t,r));return}if(r.isSymbolicLink()){let n=await f.default.readlink(e);try{await f.default.symlink(n,t)}catch(e){if(e?.code!==`EEXIST`)throw e}return}await f.default.mkdir((0,s.dirname)(t),{recursive:!0});let i=await f.default.readFile(e);await f.default.writeFile(t,i);try{await f.default.chmod(t,r.mode)}catch{}}await n(e,t)}';
-
-if (!text.includes(original)) {
+const originalRe = /async function ([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{if\(([A-Za-z_$][\w$]*)\.default\.platform===`darwin`\)\{await ([A-Za-z_$][\w$]*)\(`ditto`,\[`--noqtn`,\2,\3\]\);return\}await ([A-Za-z_$][\w$]*)\.default\.cp\(\2,\3,\{recursive:!0,verbatimSymlinks:!0\}\)\}/;
+const match = text.match(originalRe);
+if (!match) {
   process.stderr.write('bundled-marketplace-copy-target-not-found\n');
   process.exit(2);
 }
 
-fs.writeFileSync(file, text.replace(original, replacement));
+const matchIndex = match.index ?? 0;
+const searchStart = Math.max(0, matchIndex - 2500);
+const searchEnd = Math.min(text.length, matchIndex + 2500);
+const nearby = text.slice(searchStart, searchEnd);
+const pathMatch = nearby.match(/\(0,([A-Za-z_$][\w$]*)\.join\)\(/) || text.match(/\(0,([A-Za-z_$][\w$]*)\.join\)\(/);
+if (!pathMatch) {
+  process.stderr.write('bundled-marketplace-copy-path-var-not-found\n');
+  process.exit(2);
+}
+
+const [, fn, sourceArg, targetArg, platformVar, dittoFn, fsVar] = match;
+const pathVar = pathMatch[1];
+const fallbackFn = `codexWindowsBundledMarketplaceCopyFallback`;
+const replacement = `async function ${fn}(${sourceArg},${targetArg}){if(${platformVar}.default.platform===\`darwin\`){await ${dittoFn}(\`ditto\`,[\`--noqtn\`,${sourceArg},${targetArg}]);return}try{await ${fsVar}.default.cp(${sourceArg},${targetArg},{recursive:!0,verbatimSymlinks:!0});return}catch(n){if(${platformVar}.default.platform!==\`win32\`)throw n;try{console.warn(\`${patchedMarker}\`,n)}catch{}}async function ${fallbackFn}(e,t){let n=await ${fsVar}.default.lstat(e);if(n.isDirectory()){await ${fsVar}.default.mkdir(t,{recursive:!0});for(let r of await ${fsVar}.default.readdir(e))await ${fallbackFn}((0,${pathVar}.join)(e,r),(0,${pathVar}.join)(t,r));return}if(n.isSymbolicLink()){let r=await ${fsVar}.default.readlink(e);try{await ${fsVar}.default.symlink(r,t)}catch(e){if(e?.code!==\`EEXIST\`)throw e}return}await ${fsVar}.default.mkdir((0,${pathVar}.dirname)(t),{recursive:!0});let r=await ${fsVar}.default.readFile(e);await ${fsVar}.default.writeFile(t,r);try{await ${fsVar}.default.chmod(t,n.mode)}catch{}}await ${fallbackFn}(${sourceArg},${targetArg})}`;
+
+fs.writeFileSync(file, text.replace(originalRe, replacement));
 process.stdout.write('patched');
 '@
 
@@ -1124,8 +1146,8 @@ function Find-PatchTargets {
   foreach ($candidate in $desktopFeatureSenderCandidates) {
     $text = Get-Content -Raw -LiteralPath $candidate
     if ($text.Contains('electron-desktop-features-changed') -and
-        (($text -match 'inAppBrowserUse:[^,}]+,inAppBrowserUseAllowed:[^,}]+,(linksDefaultInAppBrowser:[^,}]+,)?(localBackend:[^,}]+,)?browserPane:[^,}]+,externalBrowserUse:[^,}]+,externalBrowserUseAllowed:[^,}]+,computerUse:[^,}]+') -or
-         ($text -match 'inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,(linksDefaultInAppBrowser:[^,}]+,)?(localBackend:[^,}]+,)?browserPane:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0'))) {
+        (($text -match 'inAppBrowserUse:[^,}]+,inAppBrowserUseAllowed:[^,}]+,(defaultLinkOpenTargetPreference:[^,}]+,)?(linksDefaultInAppBrowser:[^,}]+,)?(localBackend:[^,}]+,)?browserPane:[^,}]+,externalBrowserUse:[^,}]+,externalBrowserUseAllowed:[^,}]+,computerUse:[^,}]+') -or
+         ($text -match 'inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,(defaultLinkOpenTargetPreference:[^,}]+,)?(linksDefaultInAppBrowser:[^,}]+,)?(localBackend:[^,}]+,)?browserPane:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0'))) {
       $desktopFeatureSenderTarget = $candidate
       break
     }
@@ -1203,7 +1225,7 @@ function Find-PatchTargets {
     }
   }
   if ([string]::IsNullOrWhiteSpace($goalComposerTarget)) {
-    Fail 'could not find goal composer gate in extracted assets'
+    Write-Log 'goal composer gate not found; treating current build as already open or migrated'
   }
 
   $goalSlashTarget = $null
@@ -1306,7 +1328,9 @@ function Find-PatchTargets {
   $bundledMarketplaceCopyTarget = $null
   foreach ($candidate in (Get-ChildItem -LiteralPath $viteBuildDir -Filter '*.js' -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)) {
     $text = Get-Content -Raw -LiteralPath $candidate
-    if (($text.Contains('plugin_marketplace_folder_write_failed') -and $text.Contains('async function Bs(e,t)')) -or $text.Contains('codex_windows_bundled_marketplace_copy_fallback')) {
+    if (($text.Contains('plugin_marketplace_folder_write_failed') -and $text.Contains('copy_plugins') -and $text.Contains('verbatimSymlinks:!0')) -or
+        ($text.Contains('plugin_marketplace_folder_write_failed') -and $text.Contains('async function Bs(e,t)')) -or
+        $text.Contains('codex_windows_bundled_marketplace_copy_fallback')) {
       $bundledMarketplaceCopyTarget = $candidate
       break
     }
@@ -1400,7 +1424,9 @@ function Invoke-PatchAppAsar {
     $bundledMarketplaceCopyTarget = $null
     foreach ($candidate in (Get-ChildItem -LiteralPath $viteBuildDir -Filter '*.js' -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)) {
       $text = Get-Content -Raw -LiteralPath $candidate
-      if (($text.Contains('plugin_marketplace_folder_write_failed') -and $text.Contains('async function Bs(e,t)')) -or $text.Contains('codex_windows_bundled_marketplace_copy_fallback')) {
+      if (($text.Contains('plugin_marketplace_folder_write_failed') -and $text.Contains('copy_plugins') -and $text.Contains('verbatimSymlinks:!0')) -or
+          ($text.Contains('plugin_marketplace_folder_write_failed') -and $text.Contains('async function Bs(e,t)')) -or
+          $text.Contains('codex_windows_bundled_marketplace_copy_fallback')) {
         $bundledMarketplaceCopyTarget = $candidate
         break
       }
@@ -1443,7 +1469,11 @@ function Invoke-PatchAppAsar {
   )
   $plugins = Invoke-NodePatcher $nodePath $patchers.Plugins $pluginArgs
   Write-Log "plugin patch result: $plugins"
-  $goal = Invoke-NodePatcher $nodePath $patchers.Goal @($targets.GoalComposer, $targets.GoalSlash)
+  $goalArgs = @(
+    $(if ([string]::IsNullOrWhiteSpace($targets.GoalComposer)) { '__none__' } else { [string]$targets.GoalComposer })
+    [string]$targets.GoalSlash
+  )
+  $goal = Invoke-NodePatcher $nodePath $patchers.Goal $goalArgs
   Write-Log "goal patch result: $goal"
   $browserUse = Invoke-NodePatcher $nodePath $patchers.BrowserUse @($targets.BrowserUseFeatureHook, $targets.BrowserSidebarAvailability, $targets.DesktopFeatureSender, $targets.DesktopFeatureMain)
   Write-Log "browser-use gate patch result: $browserUse"
