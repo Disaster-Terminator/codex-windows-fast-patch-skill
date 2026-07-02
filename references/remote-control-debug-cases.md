@@ -63,6 +63,7 @@ Add-AppxPackage -Path "<large-local-build-root>\OpenAI.Codex_<version>_remote-co
 The ASAR patch script targets behavior, not fixed filenames. Dry-run and live package verification should find these markers:
 
 - `remote_control_desktop_fetch_override_used`
+- `remote_control_auth_token_expired_skipped`
 - `remote_control_appserver_bh_isolated_auth_fallback`
 - `remote_control_connection_auth_fallback_used`
 - `remote_control_mobile_setup_no_auth_redirect`
@@ -157,15 +158,17 @@ Action:
 Symptoms:
 
 - `Settings -> Connections -> Control this computer` is visible and the local toggles may appear enabled.
+- Clicking `Add` or opening the local control-computer page unexpectedly falls back to a new conversation or main chat page.
 - The page shows `Couldn’t load device list` / `无法加载设备列表` with `Sign in to ChatGPT again, then retry`.
 - `$env:USERPROFILE\.codex\sqlite\state_5.sqlite` has table `remote_control_enrollments`, but the count is `0`.
-- `$env:USERPROFILE\.codex\remote-control-flow.log` shows only `check remote control authorization`, or shows `/backend-api/wham/remote/control/clients` using `remote-control-oauth.json` with only `codex.remote_control.enroll` scope.
+- `$env:USERPROFILE\.codex\remote-control-flow.log` shows only `check remote control authorization`, shows `/backend-api/wham/remote/control/clients` using `remote-control-oauth.json` with only `codex.remote_control.enroll` scope, or shows `remote-control-oauth.json` being tried before `.codex\remote.json` for read/MFA endpoints.
 
 Action:
 
 - Do not treat visible `Control this computer` tabs as proof of working remote control. Verify `remote_control_enrollments` has a row after authorization.
 - In 26.616-style bundles, patch the new desktop fetch auth path around `async function KF({appServerClient:e,...})`, not only the older `PN/eP/pP` fetch anchors.
 - For `/wham/remote/control/clients` and environment-list read endpoints, prefer isolated `remote.json` before `remote-control-oauth.json`; the step-up/enroll token may have only `codex.remote_control.enroll` and can trigger the device-list login error.
+- For `/wham/remote/control/mfa_requirement` and other remote-control read/MFA endpoints, skip expired JWTs from either isolated auth file before returning a bearer. An expired `remote-control-oauth.json` step-up token can otherwise shadow a valid `.codex\remote.json` and produce a 401 `token_expired` path even though normal remote auth verifies successfully. Verify the ASAR contains `remote_control_auth_token_expired_skipped`.
 - Keep `remote-control-oauth.json` for MFA/step-up/enroll flows and keep `remote.json` for normal connection/read authorization. Never fall back to global `auth.json`.
 - In 26.616-style settings, the device list query can still fail even when `/backend-api/wham/remote/control/clients` returns HTTP 200. Check `/backend-api/wham/remote/control/mfa_requirement` and `/backend-api/accounts/mfa_info`: `mfa_requirement` may return `{"requirement":"required"}` while `accounts/mfa_info` returns 403 HTML. Patch the mobile setup query so that a 403 from `/accounts/mfa_info` is non-fatal for this remote-control UI path and verify `remote_control_mfa_info_403_nonblocking`.
 - The same device list view merges browser clients from `/wham/remote/control/clients` with local app-server clients from `list-remote-control-clients-for-host`. A failing app-server subquery must not discard the successful browser client list. Patch the mobile setup query merge to tolerate app-server list failures and verify `remote_control_client_list_partial_failure_nonblocking`.

@@ -61,40 +61,58 @@ const jsFiles = walk(root).filter((file) => file.endsWith(".js"));
 const mainFile = findJs("main bundle with remote-control remote-control flow", (_file, text) =>
   (text.includes("desktop_fetch_auth_401") ||
     text.includes("CODEX_API_BASE_URL") ||
-    text.includes("async function v_({action:e,appServerClient:t")) &&
-  text.includes("authorize remote control environments") &&
-  (text.includes("async function YX") ||
+    text.includes("remote_control_desktop_fetch_override_used") ||
+    text.includes("remote_control_appserver_bh_isolated_auth_fallback") ||
+    text.includes("async function v_({action:e,appServerClient:t") ||
+    text.includes("async function N_({action:e,appServerClient:t")) &&
+  (text.includes("authorize remote control environments") || text.includes("codex.remote_control.enroll")) &&
+  (text.includes("__codexRemoteControlAuthOverrideForPath") ||
+    text.includes("async function YX") ||
     text.includes("async function RZ") ||
     text.includes("async function ZZ") ||
-    text.includes("async function c$")) &&
-  (text.includes("PN({desktopOriginator:this.options.desktopOriginator") ||
+    text.includes("async function c$") ||
+    text.includes("async function I1")) &&
+  (text.includes("remote_control_desktop_fetch_override_used") ||
+    text.includes("PN({desktopOriginator:this.options.desktopOriginator") ||
     text.includes("eP({desktopOriginator:this.options.desktopOriginator") ||
     text.includes("pP({desktopOriginator:this.options.desktopOriginator") ||
     (text.includes("async function P_({action:e,appServerClient:t,desktopApiOptions:n") &&
-      text.includes("async function v_({action:e,appServerClient:t")))
+      text.includes("async function v_({action:e,appServerClient:t")) ||
+    (text.includes("async function aI({appServerClient:e,errorStatus:t,failureMessage:n,refreshToken:r,state:i}") &&
+      text.includes("async function N_({action:e,appServerClient:t")))
 );
 
-const mobileSetupNoAuthRedirectFiles = findJsAll("codex mobile setup no-auth redirect bundle", (file, text) =>
+const mobileSetupNoAuthRedirectFiles = jsFiles.filter((file) =>
   (path.basename(file).startsWith("codex-mobile-setup-queries-") &&
-    text.includes("ChatGPT auth is required to load remote control environments.") &&
-    text.includes("e.status===401")) ||
+    read(file).includes("ChatGPT auth is required to load remote control environments.") &&
+    read(file).includes("e.status===401")) ||
+  (path.basename(file).startsWith("selectable-remote-connections-signal-") &&
+    read(file).includes("ChatGPT auth is required to load remote control environments.") &&
+    read(file).includes("window.location.assign")) ||
   (path.basename(file).startsWith("codex-mobile-setup-dialog-") &&
-    text.includes("ChatGPT auth is required to load remote control environments.")) ||
+    read(file).includes("ChatGPT auth is required to load remote control environments.")) ||
   (path.basename(file).startsWith("codex-mobile-setup-flow-") &&
-    text.includes("J&&u(`/login`,{replace:!0})") &&
-    text.includes("set-local-remote-control-enabled"))
+    read(file).includes("J&&u(`/login`,{replace:!0})") &&
+    read(file).includes("set-local-remote-control-enabled"))
 );
+if (mobileSetupNoAuthRedirectFiles.length === 0) {
+  throw new Error("could not find codex mobile setup no-auth redirect bundle");
+}
 
 const mobileSetupMfaInfoFile = findJs("codex mobile setup MFA info bundle", (file, text) =>
-  path.basename(file).startsWith("codex-mobile-setup-queries-") &&
-  text.includes("/accounts/mfa_info") &&
-  text.includes("/wham/remote/control/clients")
+  ((path.basename(file).startsWith("codex-mobile-setup-queries-") ||
+    path.basename(file).startsWith("selectable-remote-connections-signal-")) &&
+    text.includes("/accounts/mfa_info") &&
+    text.includes("/wham/remote/control/clients"))
 );
 
 const mobileSetupFlowFile = findJs("codex mobile setup flow bundle", (file, text) =>
   path.basename(file).startsWith("codex-mobile-setup-flow-") &&
   text.includes("set-local-remote-control-enabled") &&
-  (text.includes("async function z") || text.includes("async function N") || text.includes("async function F"))
+  (text.includes("async function z") ||
+    text.includes("async function N") ||
+    text.includes("async function F") ||
+    text.includes("async function je"))
 );
 
 const remoteConnectionsSettingsFile = findJs("remote connections settings bundle", (file, text) =>
@@ -106,24 +124,57 @@ const remoteConnectionsSettingsFile = findJs("remote connections settings bundle
 
 function patchFlowHelpers(text) {
   if (text.includes("remote_control_flow_log_ready")) {
+    const oldPathAwareAuthOverrideFunction =
+      "function __codexRemoteControlAuthOverrideWithOrder(e,t){for(let n of e)try{let e=require(\"node:fs\"),r=__codexRemoteControlAuthJsonPath(n),i=JSON.parse(e.readFileSync(r,\"utf8\")),a=__codexRemoteControlFindAccessToken(i),o=__codexRemoteControlJwtPayload(a),s=__codexRemoteControlScopes(o),c=s.includes(__codexRemoteControlEnrollScope());if(a)return __codexRemoteControlAuthLog(\"remote_control_auth_isolated_store_priority_check\",{source:n,path:t??null,hasToken:!0,scopeCount:s.length,hasEnrollScope:c}),a;__codexRemoteControlAuthLog(\"remote_control_auth_isolated_store_priority_check\",{source:n,path:t??null,hasToken:!1})}catch(e){__codexRemoteControlAuthLog(\"remote_control_auth_isolated_store_priority_check\",{source:n,path:t??null,hasToken:!1,errorName:e?.name,errorMessage:e?.message,errorCode:e?.code})}return null}";
+    const newPathAwareAuthOverrideFunction =
+      "function __codexRemoteControlAuthOverrideWithOrder(e,t){for(let n of e)try{let e=require(\"node:fs\"),r=__codexRemoteControlAuthJsonPath(n),i=JSON.parse(e.readFileSync(r,\"utf8\")),a=__codexRemoteControlFindAccessToken(i),o=__codexRemoteControlJwtPayload(a),s=__codexRemoteControlScopes(o),c=s.includes(__codexRemoteControlEnrollScope()),l=typeof o?.exp==\"number\"&&o.exp<=Math.floor(Date.now()/1e3)+30;if(a&&l){__codexRemoteControlAuthLog(\"remote_control_auth_token_expired_skipped\",{source:n,path:t??null,hasToken:!0,scopeCount:s.length,hasEnrollScope:c,expiresAt:o?.exp??null});continue}if(a)return __codexRemoteControlAuthLog(\"remote_control_auth_isolated_store_priority_check\",{source:n,path:t??null,hasToken:!0,scopeCount:s.length,hasEnrollScope:c}),a;__codexRemoteControlAuthLog(\"remote_control_auth_isolated_store_priority_check\",{source:n,path:t??null,hasToken:!1})}catch(e){__codexRemoteControlAuthLog(\"remote_control_auth_isolated_store_priority_check\",{source:n,path:t??null,hasToken:!1,errorName:e?.name,errorMessage:e?.message,errorCode:e?.code})}return null}";
+    if (!text.includes("remote_control_auth_token_expired_skipped") && text.includes(oldPathAwareAuthOverrideFunction)) {
+      return {
+        text: replaceExact(
+          text,
+          oldPathAwareAuthOverrideFunction,
+          newPathAwareAuthOverrideFunction,
+          "remote-control path-aware auth override function expired-token guard",
+        ),
+        status: "patched-expired-token-guard",
+      };
+    }
+
+    const oldPathAwareAuthOverride =
+      "function __codexRemoteControlAuthOverrideWithOrder(e,t){for(let n of e)try{let e=require(\"node:fs\"),r=__codexRemoteControlAuthJsonPath(n),i=JSON.parse(e.readFileSync(r,\"utf8\")),a=__codexRemoteControlFindAccessToken(i),o=__codexRemoteControlJwtPayload(a),s=__codexRemoteControlScopes(o),c=s.includes(__codexRemoteControlEnrollScope());if(a)return __codexRemoteControlAuthLog(\"remote_control_auth_isolated_store_priority_check\",{source:n,path:t??null,hasToken:!0,scopeCount:s.length,hasEnrollScope:c}),a;__codexRemoteControlAuthLog(\"remote_control_auth_isolated_store_priority_check\",{source:n,path:t??null,hasToken:!1})}catch(e){__codexRemoteControlAuthLog(\"remote_control_auth_isolated_store_priority_check\",{source:n,path:t??null,hasToken:!1,errorName:e?.name,errorMessage:e?.message,errorCode:e?.code})}return null}function __codexRemoteControlAuthOverrideForPath(e){let t=String(e??\"\"),n=t.includes(\"/wham/remote/control/clients\")||t.includes(\"/wham/remote/control/environments\")?[\"remote.json\",\"remote-control-oauth.json\"]:[\"remote-control-oauth.json\",\"remote.json\"];return __codexRemoteControlAuthOverrideWithOrder(n,t)}function __codexRemoteControlAuthOverride(){return __codexRemoteControlAuthOverrideForPath(\"\")}";
+    const newPathAwareAuthOverride =
+      "function __codexRemoteControlAuthOverrideWithOrder(e,t){for(let n of e)try{let e=require(\"node:fs\"),r=__codexRemoteControlAuthJsonPath(n),i=JSON.parse(e.readFileSync(r,\"utf8\")),a=__codexRemoteControlFindAccessToken(i),o=__codexRemoteControlJwtPayload(a),s=__codexRemoteControlScopes(o),c=s.includes(__codexRemoteControlEnrollScope()),l=typeof o?.exp==\"number\"&&o.exp<=Math.floor(Date.now()/1e3)+30;if(a&&l){__codexRemoteControlAuthLog(\"remote_control_auth_token_expired_skipped\",{source:n,path:t??null,hasToken:!0,scopeCount:s.length,hasEnrollScope:c,expiresAt:o?.exp??null});continue}if(a)return __codexRemoteControlAuthLog(\"remote_control_auth_isolated_store_priority_check\",{source:n,path:t??null,hasToken:!0,scopeCount:s.length,hasEnrollScope:c}),a;__codexRemoteControlAuthLog(\"remote_control_auth_isolated_store_priority_check\",{source:n,path:t??null,hasToken:!1})}catch(e){__codexRemoteControlAuthLog(\"remote_control_auth_isolated_store_priority_check\",{source:n,path:t??null,hasToken:!1,errorName:e?.name,errorMessage:e?.message,errorCode:e?.code})}return null}function __codexRemoteControlAuthOverrideForPath(e){let t=String(e??\"\"),n=t.includes(\"/wham/remote/control/clients\")||t.includes(\"/wham/remote/control/environments\")?[\"remote.json\",\"remote-control-oauth.json\"]:[\"remote-control-oauth.json\",\"remote.json\"];return __codexRemoteControlAuthOverrideWithOrder(n,t)}function __codexRemoteControlAuthOverride(){return __codexRemoteControlAuthOverrideForPath(\"\")}";
+    if (!text.includes("remote_control_auth_token_expired_skipped") && text.includes(oldPathAwareAuthOverride)) {
+      return {
+        text: replaceExact(
+          text,
+          oldPathAwareAuthOverride,
+          newPathAwareAuthOverride,
+          "remote-control path-aware auth override expired-token guard",
+        ),
+        status: "patched-expired-token-guard",
+      };
+    }
+
     if (!text.includes("function __codexRemoteControlAuthOverrideForPath")) {
       const oldAuthOverride =
         "function __codexRemoteControlAuthOverride(){for(let e of[\"remote-control-oauth.json\",\"remote.json\"])try{let t=require(\"node:fs\"),n=__codexRemoteControlAuthJsonPath(e),r=JSON.parse(t.readFileSync(n,\"utf8\")),i=__codexRemoteControlFindAccessToken(r),a=__codexRemoteControlJwtPayload(i),o=__codexRemoteControlScopes(a),s=o.includes(__codexRemoteControlEnrollScope());if(i)return __codexRemoteControlAuthLog(\"remote_control_auth_isolated_store_priority_check\",{source:e,hasToken:!0,scopeCount:o.length,hasEnrollScope:s}),i;__codexRemoteControlAuthLog(\"remote_control_auth_isolated_store_priority_check\",{source:e,hasToken:!1})}catch(t){__codexRemoteControlAuthLog(\"remote_control_auth_isolated_store_priority_check\",{source:e,hasToken:!1,errorName:t?.name,errorMessage:t?.message,errorCode:t?.code})}return null}";
       const newAuthOverride =
-        "function __codexRemoteControlAuthOverrideWithOrder(e,t){for(let n of e)try{let e=require(\"node:fs\"),r=__codexRemoteControlAuthJsonPath(n),i=JSON.parse(e.readFileSync(r,\"utf8\")),a=__codexRemoteControlFindAccessToken(i),o=__codexRemoteControlJwtPayload(a),s=__codexRemoteControlScopes(o),c=s.includes(__codexRemoteControlEnrollScope());if(a)return __codexRemoteControlAuthLog(\"remote_control_auth_isolated_store_priority_check\",{source:n,path:t??null,hasToken:!0,scopeCount:s.length,hasEnrollScope:c}),a;__codexRemoteControlAuthLog(\"remote_control_auth_isolated_store_priority_check\",{source:n,path:t??null,hasToken:!1})}catch(e){__codexRemoteControlAuthLog(\"remote_control_auth_isolated_store_priority_check\",{source:n,path:t??null,hasToken:!1,errorName:e?.name,errorMessage:e?.message,errorCode:e?.code})}return null}function __codexRemoteControlAuthOverrideForPath(e){let t=String(e??\"\"),n=t.includes(\"/wham/remote/control/clients\")||t.includes(\"/wham/remote/control/environments\")?[\"remote.json\",\"remote-control-oauth.json\"]:[\"remote-control-oauth.json\",\"remote.json\"];return __codexRemoteControlAuthOverrideWithOrder(n,t)}function __codexRemoteControlAuthOverride(){return __codexRemoteControlAuthOverrideForPath(\"\")}";
+        newPathAwareAuthOverride;
       const next = replaceExact(text, oldAuthOverride, newAuthOverride, "remote-control path-aware auth override helper");
       return { text: next, status: "patched-path-aware-auth-helper" };
     }
     return { text, status: "already-patched" };
   }
 
-  const authHelper = `function __codexRemoteControlEnrollScope(){return typeof GX=="string"?GX:typeof qZ=="string"?qZ:typeof K_=="string"?K_:typeof i$=="string"?i$:"codex.remote_control.enroll"}function __codexRemoteControlAuthLog(e,t={}){try{typeof __codexRemoteControlFlowLog=="function"?__codexRemoteControlFlowLog(e,{marker:"remote_control_auth_isolated_store_priority_check",...t}):console.warn("remote_control_auth_isolated_store_priority_check",e,t)}catch{}}function __codexRemoteControlAuthJsonPath(e){let t=require("node:os"),n=require("node:path");if(e!=="remote-control-oauth.json"&&e!=="remote.json")throw Error("remote_control_auth_forbidden_file");let r=n.resolve(n.join(t.homedir(),".codex",e)),i=n.resolve(n.join(t.homedir(),".codex","auth.json"));if(r===i)throw Error("remote_control_auth_global_auth_rejected");return r}function __codexRemoteControlFindAccessToken(e,t=0){if(e==null||t>8)return null;if(typeof e=="string"){let t=e.trim();return t.split(".").length>=3?t:null}if(typeof e!="object")return null;for(let n of["access_token","accessToken"]){let r=e[n];if(typeof r=="string"&&r.trim().length>0)return r.trim()}for(let n of["tokens","auth","response","credential","credentials","remote","remote_control","step_up_token_exchange_stored_isolated"]){let r=__codexRemoteControlFindAccessToken(e[n],t+1);if(r)return r}if(e.entries&&typeof e.entries=="object")for(let n of Object.values(e.entries)){let e=__codexRemoteControlFindAccessToken(n,t+1);if(e)return e}for(let n of Object.values(e)){let e=__codexRemoteControlFindAccessToken(n,t+1);if(e)return e}return null}function __codexRemoteControlAuthOverrideWithOrder(e,t){for(let n of e)try{let e=require("node:fs"),r=__codexRemoteControlAuthJsonPath(n),i=JSON.parse(e.readFileSync(r,"utf8")),a=__codexRemoteControlFindAccessToken(i),o=__codexRemoteControlJwtPayload(a),s=__codexRemoteControlScopes(o),c=s.includes(__codexRemoteControlEnrollScope());if(a)return __codexRemoteControlAuthLog("remote_control_auth_isolated_store_priority_check",{source:n,path:t??null,hasToken:!0,scopeCount:s.length,hasEnrollScope:c}),a;__codexRemoteControlAuthLog("remote_control_auth_isolated_store_priority_check",{source:n,path:t??null,hasToken:!1})}catch(e){__codexRemoteControlAuthLog("remote_control_auth_isolated_store_priority_check",{source:n,path:t??null,hasToken:!1,errorName:e?.name,errorMessage:e?.message,errorCode:e?.code})}return null}function __codexRemoteControlAuthOverrideForPath(e){let t=String(e??""),n=/\\/(?:backend-api\\/)?wham\\/remote\\/control\\/clients(?:\\/|$)/.test(t)||/\\/(?:backend-api\\/)?wham\\/remote\\/control\\/environments(?:\\/|$)/.test(t)?["remote.json","remote-control-oauth.json"]:["remote-control-oauth.json","remote.json"];return __codexRemoteControlAuthOverrideWithOrder(n,t)}function __codexRemoteControlAuthOverride(){return __codexRemoteControlAuthOverrideForPath("")}`;
-  const helper = authHelper + `function __codexRemoteControlSafeWriteFile(e,t){let n=require("node:os"),r=require("node:path"),i=require("node:fs"),a=r.resolve(String(e)),o=r.resolve(r.join(n.homedir(),".codex","auth.json"));if(a===o)throw Error("remote_control_private_file_target_rejected: software_device_key_private_helper_required");try{let e=i.realpathSync.native?i.realpathSync.native(a):i.realpathSync(a);if(e===o)throw Error("remote_control_private_file_target_rejected: software_device_key_private_helper_required")}catch(e){if(e?.code!=="ENOENT")throw e}try{let e=i.lstatSync(a);if(e.isSymbolicLink())throw Error("remote_control_private_file_target_rejected: symlink")}catch(e){if(e?.code!=="ENOENT")throw e}i.mkdirSync(r.dirname(a),{recursive:!0});i.writeFileSync(a,t,{encoding:"utf8",mode:384});try{i.chmodSync(a,384)}catch{}}function __codexRemoteControlFlowLog(e,t={}){try{let n=require("node:os"),r=require("node:path"),i=require("node:fs"),a=r.join(n.homedir(),".codex","remote-control-flow.log"),o={time:new Date().toISOString(),pid:process.pid,marker:"remote_control_flow_log_ready",stage:e,...t};for(let e of["access_token","refresh_token","id_token","step_up_token","authorization_code","code","codeVerifier","code_verifier","Authorization","authorization","bearer"])delete o[e];i.mkdirSync(r.dirname(a),{recursive:!0});i.appendFileSync(a,JSON.stringify(o)+"\\n","utf8")}catch(e){try{console.warn("remote_control_flow_log_failed",{errorName:e?.name,errorMessage:e?.message,errorCode:e?.code})}catch{}}}function __codexRemoteControlStepUpStorePath(){let e=require("node:os"),t=require("node:path");return t.join(e.homedir(),".codex","remote-control-oauth.json")}function __codexRemoteControlReadStepUpStore(){try{let e=require("node:fs");return JSON.parse(e.readFileSync(__codexRemoteControlStepUpStorePath(),"utf8"))}catch{return{schema:"codex-remote-control-oauth-isolated-v1",entries:{}}}}function __codexRemoteControlJwtPayload(e){let t=String(e||"").split(".");if(t.length<2||!t[1])return null;try{return JSON.parse(Buffer.from(t[1],"base64url").toString("utf8"))}catch{return null}}function __codexRemoteControlScopes(e){let t=new Set;for(let n of e?.scope?.split?.(/\\s+/)??[])n&&t.add(n);for(let n of Array.isArray(e?.scp)?e.scp:[])n&&t.add(n);return[...t]}function __codexRemoteControlReadFreshStepUpToken(e){try{let t=__codexRemoteControlReadStepUpStore(),n=t.tokens?.access_token??t.access_token??t.entries?.step_up_token_exchange_stored_isolated?.response?.access_token??t.step_up_token_exchange_stored_isolated?.response?.access_token;if(typeof n!="string"||n.trim().length===0)return __codexRemoteControlFlowLog("remote_control_step_up_cached_missing",{}),null;n=n.trim();let r=__codexRemoteControlJwtPayload(n);if(r==null)return __codexRemoteControlFlowLog("remote_control_step_up_cached_invalid_jwt",{}),null;let i=Math.floor(Date.now()/1e3),a=Date.now(),o=r["https://api.openai.com/auth"]??{},s=o.chatgpt_account_id??o.account_id,c=o.chatgpt_account_user_id??o.account_user_id,l=__codexRemoteControlScopes(r),u=l.includes(typeof GX=="string"?GX:"codex.remote_control.enroll"),d=typeof r.exp=="number"&&r.exp>i+30,f=typeof r.iat=="number"&&i-r.iat<240,p=typeof r.pwd_auth_time=="number"&&a-r.pwd_auth_time<240000,m=e==null||s==null||s===e;if(d&&f&&p&&u&&m)return __codexRemoteControlFlowLog("remote_control_step_up_cached_reused",{source:"remote-control-oauth.json",scopeCount:l.length,hasAccountId:!!s,hasAccountUserId:!!c,expiresAt:r.exp}),n;return __codexRemoteControlFlowLog("remote_control_step_up_cached_rejected",{source:"remote-control-oauth.json",hasRequiredScope:u,accountMatches:m,expiresOk:d,issuedFresh:f,passwordFresh:p,scopeCount:l.length,hasAccountId:!!s,hasAccountUserId:!!c}),null}catch(t){return __codexRemoteControlFlowLog("remote_control_step_up_cached_read_failed",{errorName:t?.name,errorMessage:t?.message,errorCode:t?.code}),null}}function __codexRemoteControlStoreStepUpTokenResponse(e,t={}){try{let n=__codexRemoteControlReadStepUpStore();n.schema="codex-remote-control-oauth-isolated-v1";n.updatedAt=new Date().toISOString();n.entries??={};n.entries.step_up_token_exchange_stored_isolated={time:new Date().toISOString(),pid:process.pid,...t,response:e};__codexRemoteControlSafeWriteFile(__codexRemoteControlStepUpStorePath(),JSON.stringify(n,null,2)+"\\n");__codexRemoteControlFlowLog("remote_control_oauth_store_write",{store:"remote-control-oauth.json",responseKeys:e&&typeof e=="object"?Object.keys(e).slice(0,20):[]})}catch(e){__codexRemoteControlFlowLog("remote_control_oauth_store_write_failed",{errorName:e?.name,errorMessage:e?.message,errorCode:e?.code})}}`;
+  const authHelper = `function __codexRemoteControlEnrollScope(){return typeof GX=="string"?GX:typeof qZ=="string"?qZ:typeof K_=="string"?K_:typeof i$=="string"?i$:typeof M1=="string"?M1:"codex.remote_control.enroll"}function __codexRemoteControlAuthLog(e,t={}){try{typeof __codexRemoteControlFlowLog=="function"?__codexRemoteControlFlowLog(e,{marker:"remote_control_auth_isolated_store_priority_check",...t}):console.warn("remote_control_auth_isolated_store_priority_check",e,t)}catch{}}function __codexRemoteControlAuthJsonPath(e){let t=require("node:os"),n=require("node:path");if(e!=="remote-control-oauth.json"&&e!=="remote.json")throw Error("remote_control_auth_forbidden_file");let r=n.resolve(n.join(t.homedir(),".codex",e)),i=n.resolve(n.join(t.homedir(),".codex","auth.json"));if(r===i)throw Error("remote_control_auth_global_auth_rejected");return r}function __codexRemoteControlFindAccessToken(e,t=0){if(e==null||t>8)return null;if(typeof e=="string"){let t=e.trim();return t.split(".").length>=3?t:null}if(typeof e!="object")return null;for(let n of["access_token","accessToken"]){let r=e[n];if(typeof r=="string"&&r.trim().length>0)return r.trim()}for(let n of["tokens","auth","response","credential","credentials","remote","remote_control","step_up_token_exchange_stored_isolated"]){let r=__codexRemoteControlFindAccessToken(e[n],t+1);if(r)return r}if(e.entries&&typeof e.entries=="object")for(let n of Object.values(e.entries)){let e=__codexRemoteControlFindAccessToken(n,t+1);if(e)return e}for(let n of Object.values(e)){let e=__codexRemoteControlFindAccessToken(n,t+1);if(e)return e}return null}function __codexRemoteControlAuthOverrideWithOrder(e,t){for(let n of e)try{let e=require("node:fs"),r=__codexRemoteControlAuthJsonPath(n),i=JSON.parse(e.readFileSync(r,"utf8")),a=__codexRemoteControlFindAccessToken(i),o=__codexRemoteControlJwtPayload(a),s=__codexRemoteControlScopes(o),c=s.includes(__codexRemoteControlEnrollScope()),l=typeof o?.exp=="number"&&o.exp<=Math.floor(Date.now()/1e3)+30;if(a&&l){__codexRemoteControlAuthLog("remote_control_auth_token_expired_skipped",{source:n,path:t??null,hasToken:!0,scopeCount:s.length,hasEnrollScope:c,expiresAt:o?.exp??null});continue}if(a)return __codexRemoteControlAuthLog("remote_control_auth_isolated_store_priority_check",{source:n,path:t??null,hasToken:!0,scopeCount:s.length,hasEnrollScope:c}),a;__codexRemoteControlAuthLog("remote_control_auth_isolated_store_priority_check",{source:n,path:t??null,hasToken:!1})}catch(e){__codexRemoteControlAuthLog("remote_control_auth_isolated_store_priority_check",{source:n,path:t??null,hasToken:!1,errorName:e?.name,errorMessage:e?.message,errorCode:e?.code})}return null}function __codexRemoteControlAuthOverrideForPath(e){let t=String(e??""),n=/\\/(?:backend-api\\/)?wham\\/remote\\/control\\/clients(?:\\/|$)/.test(t)||/\\/(?:backend-api\\/)?wham\\/remote\\/control\\/environments(?:\\/|$)/.test(t)?["remote.json","remote-control-oauth.json"]:["remote-control-oauth.json","remote.json"];return __codexRemoteControlAuthOverrideWithOrder(n,t)}function __codexRemoteControlAuthOverride(){return __codexRemoteControlAuthOverrideForPath("")}`;
+  const helper = authHelper + `function __codexRemoteControlSafeWriteFile(e,t){let n=require("node:os"),r=require("node:path"),i=require("node:fs"),a=r.resolve(String(e)),o=r.resolve(r.join(n.homedir(),".codex","auth.json"));if(a===o)throw Error("remote_control_private_file_target_rejected: software_device_key_private_helper_required");try{let e=i.realpathSync.native?i.realpathSync.native(a):i.realpathSync(a);if(e===o)throw Error("remote_control_private_file_target_rejected: software_device_key_private_helper_required")}catch(e){if(e?.code!=="ENOENT")throw e}try{let e=i.lstatSync(a);if(e.isSymbolicLink())throw Error("remote_control_private_file_target_rejected: symlink")}catch(e){if(e?.code!=="ENOENT")throw e}i.mkdirSync(r.dirname(a),{recursive:!0});i.writeFileSync(a,t,{encoding:"utf8",mode:384});try{i.chmodSync(a,384)}catch{}}function __codexRemoteControlFlowLog(e,t={}){try{let n=require("node:os"),r=require("node:path"),i=require("node:fs"),a=r.join(n.homedir(),".codex","remote-control-flow.log"),o={time:new Date().toISOString(),pid:process.pid,marker:"remote_control_flow_log_ready",stage:e,...t};for(let e of["access_token","refresh_token","id_token","step_up_token","authorization_code","code","codeVerifier","code_verifier","Authorization","authorization","bearer"])delete o[e];i.mkdirSync(r.dirname(a),{recursive:!0});i.appendFileSync(a,JSON.stringify(o)+"\\n","utf8")}catch(e){try{console.warn("remote_control_flow_log_failed",{errorName:e?.name,errorMessage:e?.message,errorCode:e?.code})}catch{}}}function __codexRemoteControlStepUpStorePath(){let e=require("node:os"),t=require("node:path");return t.join(e.homedir(),".codex","remote-control-oauth.json")}function __codexRemoteControlReadStepUpStore(){try{let e=require("node:fs");return JSON.parse(e.readFileSync(__codexRemoteControlStepUpStorePath(),"utf8"))}catch{return{schema:"codex-remote-control-oauth-isolated-v1",entries:{}}}}function __codexRemoteControlJwtPayload(e){let t=String(e||"").split(".");if(t.length<2||!t[1])return null;try{return JSON.parse(Buffer.from(t[1],"base64url").toString("utf8"))}catch{return null}}function __codexRemoteControlScopes(e){let t=new Set;for(let n of e?.scope?.split?.(/\\s+/)??[])n&&t.add(n);for(let n of Array.isArray(e?.scp)?e.scp:[])n&&t.add(n);return[...t]}function __codexRemoteControlReadFreshStepUpToken(e){try{let t=__codexRemoteControlReadStepUpStore(),n=t.tokens?.access_token??t.access_token??t.entries?.step_up_token_exchange_stored_isolated?.response?.access_token??t.step_up_token_exchange_stored_isolated?.response?.access_token;if(typeof n!="string"||n.trim().length===0)return __codexRemoteControlFlowLog("remote_control_step_up_cached_missing",{}),null;n=n.trim();let r=__codexRemoteControlJwtPayload(n);if(r==null)return __codexRemoteControlFlowLog("remote_control_step_up_cached_invalid_jwt",{}),null;let i=Math.floor(Date.now()/1e3),a=Date.now(),o=r["https://api.openai.com/auth"]??{},s=o.chatgpt_account_id??o.account_id,c=o.chatgpt_account_user_id??o.account_user_id,l=__codexRemoteControlScopes(r),u=l.includes(__codexRemoteControlEnrollScope()),d=typeof r.exp=="number"&&r.exp>i+30,f=typeof r.iat=="number"&&i-r.iat<240,p=typeof r.pwd_auth_time=="number"&&a-r.pwd_auth_time<240000,m=e==null||s==null||s===e;if(d&&f&&p&&u&&m)return __codexRemoteControlFlowLog("remote_control_step_up_cached_reused",{source:"remote-control-oauth.json",scopeCount:l.length,hasAccountId:!!s,hasAccountUserId:!!c,expiresAt:r.exp}),n;return __codexRemoteControlFlowLog("remote_control_step_up_cached_rejected",{source:"remote-control-oauth.json",hasRequiredScope:u,accountMatches:m,expiresOk:d,issuedFresh:f,passwordFresh:p,scopeCount:l.length,hasAccountId:!!s,hasAccountUserId:!!c}),null}catch(t){return __codexRemoteControlFlowLog("remote_control_step_up_cached_read_failed",{errorName:t?.name,errorMessage:t?.message,errorCode:t?.code}),null}}function __codexRemoteControlStoreStepUpTokenResponse(e,t={}){try{let n=__codexRemoteControlReadStepUpStore();n.schema="codex-remote-control-oauth-isolated-v1";n.updatedAt=new Date().toISOString();n.entries??={};n.entries.step_up_token_exchange_stored_isolated={time:new Date().toISOString(),pid:process.pid,...t,response:e};__codexRemoteControlSafeWriteFile(__codexRemoteControlStepUpStorePath(),JSON.stringify(n,null,2)+"\\n");__codexRemoteControlFlowLog("remote_control_oauth_store_write",{store:"remote-control-oauth.json",responseKeys:e&&typeof e=="object"?Object.keys(e).slice(0,20):[]})}catch(e){__codexRemoteControlFlowLog("remote_control_oauth_store_write_failed",{errorName:e?.name,errorMessage:e?.message,errorCode:e?.code})}}`;
   const anchor = [
     "var zX=`app_EMoamEEZ73f0CkXaXp7hrann`",
     "var OZ=`app_EMoamEEZ73f0CkXaXp7hrann`",
     "var VZ=`app_EMoamEEZ73f0CkXaXp7hrann`",
     "var QQ=`app_EMoamEEZ73f0CkXaXp7hrann`",
+    "var E1=`app_EMoamEEZ73f0CkXaXp7hrann`",
   ].find((candidate) => text.includes(candidate));
   if (!anchor) {
     throw new Error("remote-control flow helper insertion anchor not found");
@@ -160,6 +211,30 @@ function patchDesktopFetch(text) {
       throw new Error("desktop_fetch 26.616 auth path marker missing after patch");
     }
     return { text: next, status: "patched-26.616-auth-path" };
+  }
+  if (
+    text.includes("async function aI({appServerClient:e,errorStatus:t,failureMessage:n,refreshToken:r,state:i}") &&
+    text.includes("async function N_({action:e,appServerClient:t")
+  ) {
+    const oldAI =
+      "async function aI({appServerClient:e,errorStatus:t,failureMessage:n,refreshToken:r,state:i}){if(!i.attachAuth)return i;if(!r){let t=e.getCachedAuthToken?.();if(t!==void 0)return{...i,tokenSource:`cached`,token:t}}try{let t=await e.getAuthToken({refreshToken:r});return{...i,tokenSource:r?`refreshed`:`loaded`,token:t}}catch(e){throw new rI(n,t,e)}}";
+    const newAI =
+      "async function aI({appServerClient:e,errorStatus:t,failureMessage:n,refreshToken:r,state:i,resolvedUrl:a}){if(!i.attachAuth)return i;let o=(()=>{try{return new URL(a).pathname}catch{return String(a??``)}})(),s=/\\/(?:backend-api\\/)?wham\\/remote\\/control\\//.test(o)||o===`/backend-api/accounts/mfa_info`||o===`/accounts/mfa_info`;if(s){let e=typeof __codexRemoteControlAuthOverrideForPath==\"function\"?__codexRemoteControlAuthOverrideForPath(o):typeof __codexRemoteControlAuthOverride==\"function\"?__codexRemoteControlAuthOverride():null;if(e)return typeof __codexRemoteControlFlowLog==\"function\"&&__codexRemoteControlFlowLog(\"remote_control_desktop_fetch_new_auth_path_used\",{path:o,refreshToken:r}),{...i,tokenSource:`remote-control-isolated`,token:e}}if(!r){let t=e.getCachedAuthToken?.();if(t!==void 0)return{...i,tokenSource:`cached`,token:t}}try{let t=await e.getAuthToken({refreshToken:r});return{...i,tokenSource:r?`refreshed`:`loaded`,token:t}}catch(e){throw new rI(n,t,e)}}";
+    const oldInitialAuth =
+      "u=await aI({appServerClient:this.getAppServerConnection(B),errorStatus:432,failureMessage:`Failed to retrieve authentication token`,refreshToken:!1,state:u})";
+    const newInitialAuth =
+      "u=await aI({appServerClient:this.getAppServerConnection(B),errorStatus:432,failureMessage:`Failed to retrieve authentication token`,refreshToken:!1,state:u,resolvedUrl:o})";
+    const oldRetryAuth =
+      "u=await aI({appServerClient:this.getAppServerConnection(B),errorStatus:401,failureMessage:`Failed to refresh authentication token`,refreshToken:!0,state:u})";
+    const newRetryAuth =
+      "u=await aI({appServerClient:this.getAppServerConnection(B),errorStatus:401,failureMessage:`Failed to refresh authentication token`,refreshToken:!0,state:u,resolvedUrl:o})";
+    let next = replaceExact(text, oldAI, newAI, "desktop_fetch 26.623 auth fallback");
+    next = replaceExact(next, oldInitialAuth, newInitialAuth, "desktop_fetch 26.623 initial auth call");
+    next = replaceExact(next, oldRetryAuth, newRetryAuth, "desktop_fetch 26.623 retry auth call");
+    if (!next.includes(newPathMarker)) {
+      throw new Error("desktop_fetch 26.623 auth path marker missing after patch");
+    }
+    return { text: next, status: "patched-26.623-auth-path" };
   }
   const oldAnchor =
     "PN({desktopOriginator:this.options.desktopOriginator,headers:t,state:e}),s&&c!=null&&this.setHeader(t,IN,c);let l=await r.net.fetch(a,{method:i,headers:t,body:d(),signal:o});";
@@ -213,13 +288,19 @@ function patchAppServerAuthFallback(text) {
       "async function v_({action:e,appServerClient:t,desktopOriginator:n,headers:i={},refreshToken:a=!1}){let o=await t.getAuthToken({refreshToken:a});if(!o){let t=r.tt();throw Error(t===`ChatGPT`?`Sign in to ChatGPT to ${e}.`:`Sign in to ChatGPT in ${t} to ${e}.`)}let s={...i};return y_(s,o,{desktopOriginator:n}),s}";
     const newV_ =
       "async function v_({action:e,appServerClient:t,desktopOriginator:n,headers:i={},refreshToken:a=!1}){let o=await t.getAuthToken({refreshToken:a});if(!o)try{o=typeof __codexRemoteControlConnectionAuthOverride==\"function\"?__codexRemoteControlConnectionAuthOverride():null,o&&typeof __codexRemoteControlFlowLog==\"function\"&&(__codexRemoteControlFlowLog(\"remote_control_appserver_bh_isolated_auth_fallback\",{action:e,refreshToken:a}),__codexRemoteControlFlowLog(\"remote_control_desktop_fetch_override_used\",{path:\"/codex/remote/control\",action:e}))}catch(t){try{typeof __codexRemoteControlFlowLog==\"function\"&&__codexRemoteControlFlowLog(\"remote_control_appserver_bh_isolated_auth_fallback_failed\",{action:e,errorName:t?.name,errorMessage:t?.message,errorCode:t?.code})}catch{}}if(!o){let t=r.tt();throw Error(t===`ChatGPT`?`Sign in to ChatGPT to ${e}.`:`Sign in to ChatGPT in ${t} to ${e}.`)}let s={...i};return y_(s,o,{desktopOriginator:n}),s}";
+    const oldN_2623 =
+      "async function N_({action:e,appServerClient:t,desktopOriginator:n,headers:i={},refreshToken:a=!1}){let o=await t.getAuthToken({refreshToken:a});if(!o){let t=r.nt();throw Error(t===`ChatGPT`?`Sign in to ChatGPT to ${e}.`:`Sign in to ChatGPT in ${t} to ${e}.`)}let s={...i};return P_(s,o,{desktopOriginator:n}),s}";
+    const newN_2623 =
+      "async function N_({action:e,appServerClient:t,desktopOriginator:n,headers:i={},refreshToken:a=!1}){let o=await t.getAuthToken({refreshToken:a});if(!o)try{o=typeof __codexRemoteControlConnectionAuthOverride==\"function\"?__codexRemoteControlConnectionAuthOverride():null,o&&typeof __codexRemoteControlFlowLog==\"function\"&&(__codexRemoteControlFlowLog(\"remote_control_appserver_bh_isolated_auth_fallback\",{action:e,refreshToken:a}),__codexRemoteControlFlowLog(\"remote_control_desktop_fetch_override_used\",{path:\"/codex/remote/control\",action:e}))}catch(t){try{typeof __codexRemoteControlFlowLog==\"function\"&&__codexRemoteControlFlowLog(\"remote_control_appserver_bh_isolated_auth_fallback_failed\",{action:e,errorName:t?.name,errorMessage:t?.message,errorCode:t?.code})}catch{}}if(!o){let t=r.nt();throw Error(t===`ChatGPT`?`Sign in to ChatGPT to ${e}.`:`Sign in to ChatGPT in ${t} to ${e}.`)}let s={...i};return P_(s,o,{desktopOriginator:n}),s}";
     next = next.includes(oldBh)
       ? replaceExact(next, oldBh, newBh, "remote-control app-server auth fallback Bh")
       : next.includes(oldLg)
         ? replaceExact(next, oldLg, newLg, "remote-control app-server auth fallback lg")
         : next.includes(oldSg)
           ? replaceExact(next, oldSg, newSg, "remote-control app-server auth fallback Sg")
-          : replaceExact(next, oldV_, newV_, "remote-control app-server auth fallback v_");
+          : next.includes(oldV_)
+            ? replaceExact(next, oldV_, newV_, "remote-control app-server auth fallback v_")
+            : replaceExact(next, oldN_2623, newN_2623, "remote-control app-server auth fallback N_");
     status = "patched";
   }
   if (!next.includes(marker) || !next.includes(helperMarker)) {
@@ -248,6 +329,10 @@ function patchStepUpFlow(text) {
   const newC$ = "async function c$({accountId:e,desktopApiOptions:t,fetchToken:n=(e,t)=>a.net.fetch(e,t),openExternalUrl:r=e=>a.shell.openExternal(e),timeoutMs:i=r$}){let __codexRemoteControlCachedStepUp=typeof __codexRemoteControlReadFreshStepUpToken==\"function\"?__codexRemoteControlReadFreshStepUpToken(e):null;if(__codexRemoteControlCachedStepUp)return __codexRemoteControlCachedStepUp;let o=u$(),s=f$(),c=p$(32),l=await h$({state:c,timeoutMs:i});try{__codexRemoteControlFlowLog(\"remote_control_step_up_browser_open\",{issuer:o,redirectUri:l.redirectUri,accountId:e??null});await r(l$({issuer:o,clientId:QQ,redirectUri:l.redirectUri,codeChallenge:s.codeChallenge,state:c,originator:t.desktopOriginator,accountId:e}));__codexRemoteControlFlowLog(\"remote_control_step_up_wait_callback\",{redirectUri:l.redirectUri});let __codexRemoteControlCode=await l.authorizationCode;__codexRemoteControlFlowLog(\"remote_control_step_up_callback_received\",{codeLength:typeof __codexRemoteControlCode==\"string\"?__codexRemoteControlCode.length:null});return (await m$({code:__codexRemoteControlCode,codeVerifier:s.codeVerifier,clientId:QQ,issuer:o,redirectUri:l.redirectUri,fetchToken:n})).access_token}catch(e){__codexRemoteControlFlowLog(\"remote_control_step_up_failed\",{errorName:e?.name,errorMessage:e?.message,errorCode:e?.code,stack:e?.stack});throw e}finally{l.close();__codexRemoteControlFlowLog(\"remote_control_step_up_listener_closed\",{})}}";
   const oldM$ = "async function m$({code:e,codeVerifier:t,clientId:n,issuer:r,redirectUri:i,fetchToken:a}){let o=await a(new URL(`/oauth/token`,d$(r)).toString(),{method:`POST`,headers:{\"Content-Type\":`application/x-www-form-urlencoded`},body:new URLSearchParams({grant_type:`authorization_code`,code:e,redirect_uri:i,client_id:n,code_verifier:t}).toString()});if(!o.ok)throw Error(`Remote control step-up token exchange failed with status ${o.status}.`);return s$.parse(await o.json())}";
   const newM$ = "async function m$({code:e,codeVerifier:t,clientId:n,issuer:r,redirectUri:i,fetchToken:a}){__codexRemoteControlFlowLog(\"remote_control_step_up_token_exchange_started\",{issuer:r,redirectUri:i});let o=await a(new URL(`/oauth/token`,d$(r)).toString(),{method:`POST`,headers:{\"Content-Type\":`application/x-www-form-urlencoded`},body:new URLSearchParams({grant_type:`authorization_code`,code:e,redirect_uri:i,client_id:n,code_verifier:t}).toString()});if(!o.ok){let e=\"\";try{e=await o.text()}catch{}__codexRemoteControlFlowLog(\"remote_control_step_up_token_exchange_failed\",{status:o.status,bodySnippet:e.slice(0,500)});throw Error(\"Remote control step-up token exchange failed with status \"+o.status+\".\")}let c=await o.json(),l=s$.parse(c);try{__codexRemoteControlStoreStepUpTokenResponse(l,{source:String(i).includes(\"/deviceauth/callback\")?\"device_code\":\"pkce\",issuer:r,redirectUri:i})}catch(e){__codexRemoteControlFlowLog(\"remote_control_step_up_store_failed\",{errorName:e?.name,errorMessage:e?.message,errorCode:e?.code})}__codexRemoteControlFlowLog(\"remote_control_step_up_token_exchange_done\",{status:o.status,responseKeys:l&&typeof l==\"object\"?Object.keys(l).slice(0,20):[]});return l}";
+  const oldI1 = "async function I1({accountId:e,desktopApiOptions:t,fetchToken:n=(e,t)=>a.net.fetch(e,t),openExternalUrl:r=e=>YA({request:{url:e,initiator:`open_in_browser_bridge`,openTarget:`external-browser`}}),timeoutMs:i=j1}){let o=R1(),s=B1(),c=V1(32),l=await U1({state:c,timeoutMs:i});l.authorizationCode.catch(()=>{});try{if(await r(L1({issuer:o,clientId:E1,redirectUri:l.redirectUri,codeChallenge:s.codeChallenge,state:c,originator:t.desktopOriginator,accountId:e}))===!1)throw Error(`Failed to open remote control login in the default browser.`);return(await H1({code:await l.authorizationCode,codeVerifier:s.codeVerifier,clientId:E1,issuer:o,redirectUri:l.redirectUri,fetchToken:n})).access_token}finally{l.close()}}";
+  const newI1 = "async function I1({accountId:e,desktopApiOptions:t,fetchToken:n=(e,t)=>a.net.fetch(e,t),openExternalUrl:r=e=>YA({request:{url:e,initiator:`open_in_browser_bridge`,openTarget:`external-browser`}}),timeoutMs:i=j1}){let __codexRemoteControlCachedStepUp=typeof __codexRemoteControlReadFreshStepUpToken==\"function\"?__codexRemoteControlReadFreshStepUpToken(e):null;if(__codexRemoteControlCachedStepUp)return __codexRemoteControlCachedStepUp;let o=R1(),s=B1(),c=V1(32),l=await U1({state:c,timeoutMs:i});l.authorizationCode.catch(()=>{});try{__codexRemoteControlFlowLog(\"remote_control_step_up_browser_open\",{issuer:o,redirectUri:l.redirectUri,accountId:e??null});if(await r(L1({issuer:o,clientId:E1,redirectUri:l.redirectUri,codeChallenge:s.codeChallenge,state:c,originator:t.desktopOriginator,accountId:e}))===!1)throw Error(`Failed to open remote control login in the default browser.`);__codexRemoteControlFlowLog(\"remote_control_step_up_wait_callback\",{redirectUri:l.redirectUri});let __codexRemoteControlCode=await l.authorizationCode;__codexRemoteControlFlowLog(\"remote_control_step_up_callback_received\",{codeLength:typeof __codexRemoteControlCode==\"string\"?__codexRemoteControlCode.length:null});return(await H1({code:__codexRemoteControlCode,codeVerifier:s.codeVerifier,clientId:E1,issuer:o,redirectUri:l.redirectUri,fetchToken:n})).access_token}catch(e){__codexRemoteControlFlowLog(\"remote_control_step_up_failed\",{errorName:e?.name,errorMessage:e?.message,errorCode:e?.code,stack:e?.stack});throw e}finally{l.close();__codexRemoteControlFlowLog(\"remote_control_step_up_listener_closed\",{})}}";
+  const oldH1 = "async function H1({code:e,codeVerifier:t,clientId:n,issuer:r,redirectUri:i,fetchToken:a}){let o=await a(new URL(`/oauth/token`,z1(r)).toString(),{method:`POST`,headers:{\"Content-Type\":`application/x-www-form-urlencoded`},body:new URLSearchParams({grant_type:`authorization_code`,code:e,redirect_uri:i,client_id:n,code_verifier:t}).toString()});if(!o.ok)throw Error(`Remote control step-up token exchange failed with status ${o.status}.`);return F1.parse(await o.json())}";
+  const newH1 = "async function H1({code:e,codeVerifier:t,clientId:n,issuer:r,redirectUri:i,fetchToken:a}){__codexRemoteControlFlowLog(\"remote_control_step_up_token_exchange_started\",{issuer:r,redirectUri:i});let o=await a(new URL(`/oauth/token`,z1(r)).toString(),{method:`POST`,headers:{\"Content-Type\":`application/x-www-form-urlencoded`},body:new URLSearchParams({grant_type:`authorization_code`,code:e,redirect_uri:i,client_id:n,code_verifier:t}).toString()});if(!o.ok){let e=\"\";try{e=await o.text()}catch{}__codexRemoteControlFlowLog(\"remote_control_step_up_token_exchange_failed\",{status:o.status,bodySnippet:e.slice(0,500)});throw Error(\"Remote control step-up token exchange failed with status \"+o.status+\".\")}let s=await o.json(),c=F1.parse(s);try{__codexRemoteControlStoreStepUpTokenResponse(c,{source:String(i).includes(\"/deviceauth/callback\")?\"device_code\":\"pkce\",issuer:r,redirectUri:i})}catch(e){__codexRemoteControlFlowLog(\"remote_control_step_up_store_failed\",{errorName:e?.name,errorMessage:e?.message,errorCode:e?.code})}__codexRemoteControlFlowLog(\"remote_control_step_up_token_exchange_done\",{status:o.status,responseKeys:c&&typeof c==\"object\"?Object.keys(c).slice(0,20):[]});return c}";
 
   let status = "already-patched";
   let next = text;
@@ -258,7 +343,9 @@ function patchStepUpFlow(text) {
         ? replaceExact(next, oldRz, newRz, "remote-control step-up RZ")
         : next.includes(oldZz)
           ? replaceExact(next, oldZz, newZz, "remote-control step-up ZZ")
-          : replaceExact(next, oldC$, newC$, "remote-control step-up c$");
+          : next.includes(oldC$)
+            ? replaceExact(next, oldC$, newC$, "remote-control step-up c$")
+            : replaceExact(next, oldI1, newI1, "remote-control step-up I1");
     status = "patched";
   }
   if (!next.includes(tzMarker)) {
@@ -268,7 +355,9 @@ function patchStepUpFlow(text) {
         ? replaceExact(next, oldWz, newWz, "remote-control step-up token exchange")
         : next.includes(oldRq)
           ? replaceExact(next, oldRq, newRq, "remote-control step-up token exchange")
-          : replaceExact(next, oldM$, newM$, "remote-control step-up token exchange");
+          : next.includes(oldM$)
+            ? replaceExact(next, oldM$, newM$, "remote-control step-up token exchange")
+            : replaceExact(next, oldH1, newH1, "remote-control step-up token exchange");
     status = "patched";
   }
   return { text: next, status };
@@ -287,6 +376,8 @@ function patchRemoteControlHttp(text) {
   const newRg = "async function Rg({action:e,appServerClient:t,desktopApiOptions:n,path:r,method:i,headers:o={},body:s,mapNotFoundToFeatureUnavailable:c=!0}){let l=xg(n,r),u=await zg({action:e,appServerClient:t,desktopApiOptions:n,headers:o}),d=await a.net.fetch(l,{method:i,headers:u,body:s});__codexRemoteControlFlowLog(\"remote_control_http_response\",{path:r,method:i,status:d.status,ok:d.ok,refreshed:!1});if(d.status===401){u=await zg({action:e,appServerClient:t,desktopApiOptions:n,headers:o,refreshToken:!0});d=await a.net.fetch(l,{method:i,headers:u,body:s});__codexRemoteControlFlowLog(\"remote_control_http_response\",{path:r,method:i,status:d.status,ok:d.ok,refreshed:!0})}if(!d.ok){let e=\"\";try{let t=d.clone?d.clone():d;e=await t.text()}catch(e){e=\"<<body read failed: \"+(e?.message??e)+\">>\"}__codexRemoteControlFlowLog(\"remote_control_http_failure_body\",{path:r,status:d.status,bodySnippet:e.slice(0,500)})}if(d.status===404&&c)throw new Mg;if(d.status===403)throw new Pg(await Kg(d));if(d.status===401)throw new Ng(Bg(e));if(!d.ok)throw Error(\"Remote control request failed (\"+d.status+\"): \"+await Kg(d));return d}";
   const oldP_ = "async function P_({action:e,appServerClient:t,desktopApiOptions:n,path:r,method:i,headers:o={},body:s,mapNotFoundToFeatureUnavailable:c=!0}){let l=__(n,r),u=await F_({action:e,appServerClient:t,desktopApiOptions:n,headers:o}),d=await a.net.fetch(l,{method:i,headers:u,body:s});if(d.status===401&&(u=await F_({action:e,appServerClient:t,desktopApiOptions:n,headers:o,refreshToken:!0}),d=await a.net.fetch(l,{method:i,headers:u,body:s})),d.status===404&&c)throw new O_;if(d.status===403)throw new A_(await H_(d));if(d.status===401)throw new k_(I_(e));if(!d.ok)throw Error(`Remote control request failed (${d.status}): ${await H_(d)}`);return d}";
   const newP_ = "async function P_({action:e,appServerClient:t,desktopApiOptions:n,path:r,method:i,headers:o={},body:s,mapNotFoundToFeatureUnavailable:c=!0}){let l=__(n,r),u=await F_({action:e,appServerClient:t,desktopApiOptions:n,headers:o}),d=await a.net.fetch(l,{method:i,headers:u,body:s});__codexRemoteControlFlowLog(\"remote_control_http_response\",{path:r,method:i,status:d.status,ok:d.ok,refreshed:!1});if(d.status===401){u=await F_({action:e,appServerClient:t,desktopApiOptions:n,headers:o,refreshToken:!0});d=await a.net.fetch(l,{method:i,headers:u,body:s});__codexRemoteControlFlowLog(\"remote_control_http_response\",{path:r,method:i,status:d.status,ok:d.ok,refreshed:!0})}if(!d.ok){let e=\"\";try{let t=d.clone?d.clone():d;e=await t.text()}catch(e){e=\"<<body read failed: \"+(e?.message??e)+\">>\"}__codexRemoteControlFlowLog(\"remote_control_http_failure_body\",{path:r,status:d.status,bodySnippet:e.slice(0,500)})}if(d.status===404&&c)throw new O_;if(d.status===403)throw new A_(await H_(d));if(d.status===401)throw new k_(I_(e));if(!d.ok)throw Error(\"Remote control request failed (\"+d.status+\"): \"+await H_(d));return d}";
+  const oldY_ = "async function Y_({action:e,appServerClient:t,desktopApiOptions:n,path:r,method:i,headers:o={},body:s,mapNotFoundToFeatureUnavailable:c=!0}){let l=M_(n,r),u=await X_({action:e,appServerClient:t,desktopApiOptions:n,headers:o}),d=await a.net.fetch(l,{method:i,headers:u,body:s});if(d.status===401&&(u=await X_({action:e,appServerClient:t,desktopApiOptions:n,headers:o,refreshToken:!0}),d=await a.net.fetch(l,{method:i,headers:u,body:s})),d.status===404&&c)throw new U_;if(d.status===403)throw new G_(await rv(d));if(d.status===401)throw new W_(Z_(e));if(!d.ok)throw Error(`Remote control request failed (${d.status}): ${await rv(d)}`);return d}";
+  const newY_ = "async function Y_({action:e,appServerClient:t,desktopApiOptions:n,path:r,method:i,headers:o={},body:s,mapNotFoundToFeatureUnavailable:c=!0}){let l=M_(n,r),u=await X_({action:e,appServerClient:t,desktopApiOptions:n,headers:o}),d=await a.net.fetch(l,{method:i,headers:u,body:s});__codexRemoteControlFlowLog(\"remote_control_http_response\",{path:r,method:i,status:d.status,ok:d.ok,refreshed:!1});if(d.status===401){u=await X_({action:e,appServerClient:t,desktopApiOptions:n,headers:o,refreshToken:!0});d=await a.net.fetch(l,{method:i,headers:u,body:s});__codexRemoteControlFlowLog(\"remote_control_http_response\",{path:r,method:i,status:d.status,ok:d.ok,refreshed:!0})}if(!d.ok){let e=\"\";try{let t=d.clone?d.clone():d;e=await t.text()}catch(e){e=\"<<body read failed: \"+(e?.message??e)+\">>\"}__codexRemoteControlFlowLog(\"remote_control_http_failure_body\",{path:r,status:d.status,bodySnippet:e.slice(0,500)})}if(d.status===404&&c)throw new U_;if(d.status===403)throw new G_(await rv(d));if(d.status===401)throw new W_(Z_(e));if(!d.ok)throw Error(\"Remote control request failed (\"+d.status+\"): \"+await rv(d));return d}";
   return {
     text: text.includes(oldNg)
       ? replaceExact(text, oldNg, newNg, "remote-control HTTP diagnostics")
@@ -294,7 +385,9 @@ function patchRemoteControlHttp(text) {
         ? replaceExact(text, oldTg, newTg, "remote-control HTTP diagnostics")
         : text.includes(oldRg)
           ? replaceExact(text, oldRg, newRg, "remote-control HTTP diagnostics")
-          : replaceExact(text, oldP_, newP_, "remote-control HTTP diagnostics"),
+          : text.includes(oldP_)
+            ? replaceExact(text, oldP_, newP_, "remote-control HTTP diagnostics")
+            : replaceExact(text, oldY_, newY_, "remote-control HTTP diagnostics"),
     status: "patched",
   };
 }
@@ -312,6 +405,8 @@ function patchRemoteControlAuthorize(text) {
   const newN_ = "async function n_({appServerClient:e,desktopApiOptions:t,deviceKeyClient:n,globalState:r,requestRemoteControlEnrollmentStepUpToken:i}){__codexRemoteControlFlowLog(\"remote_control_qm_start\",{hasStepUp:typeof i==\"function\"});try{let a=await o_({action:`authorize remote control environments`,appServerClient:e,desktopApiOptions:t});__codexRemoteControlFlowLog(\"remote_control_qm_headers_ready\",{headerKeys:Object.keys(a).filter(e=>e.toLowerCase()!==\"authorization\").sort(),hasAuthorization:Object.keys(a).some(e=>e.toLowerCase()===\"authorization\"),hasChatGptAccountId:Object.keys(a).some(e=>e.toLowerCase()===\"chatgpt-account-id\")});await s_({appServerClient:e,deviceKeyClient:n,desktopApiOptions:t,enrollmentKey:i_(t),globalState:r,headers:a,requestRemoteControlEnrollmentStepUpToken:i});__codexRemoteControlFlowLog(\"remote_control_qm_completed\",{})}catch(e){__codexRemoteControlFlowLog(\"remote_control_qm_failed\",{errorName:e?.name,errorMessage:e?.message,errorCode:e?.code,stack:e?.stack});throw e}}";
   const oldQ_ = "async function Q_({appServerClient:e,desktopApiOptions:t,deviceKeyClient:n,globalState:r,requestRemoteControlEnrollmentStepUpToken:i}){await rv({appServerClient:e,deviceKeyClient:n,desktopApiOptions:t,enrollmentKey:ev(t),globalState:r,headers:await nv({action:`authorize remote control environments`,appServerClient:e,desktopApiOptions:t}),requestRemoteControlEnrollmentStepUpToken:i})}";
   const newQ_ = "async function Q_({appServerClient:e,desktopApiOptions:t,deviceKeyClient:n,globalState:r,requestRemoteControlEnrollmentStepUpToken:i}){__codexRemoteControlFlowLog(\"remote_control_qm_start\",{hasStepUp:typeof i==\"function\"});try{let a=await nv({action:`authorize remote control environments`,appServerClient:e,desktopApiOptions:t});__codexRemoteControlFlowLog(\"remote_control_qm_headers_ready\",{headerKeys:Object.keys(a).filter(e=>e.toLowerCase()!==\"authorization\").sort(),hasAuthorization:Object.keys(a).some(e=>e.toLowerCase()===\"authorization\"),hasChatGptAccountId:Object.keys(a).some(e=>e.toLowerCase()===\"chatgpt-account-id\")});await rv({appServerClient:e,deviceKeyClient:n,desktopApiOptions:t,enrollmentKey:ev(t),globalState:r,headers:a,requestRemoteControlEnrollmentStepUpToken:i});__codexRemoteControlFlowLog(\"remote_control_qm_completed\",{})}catch(e){__codexRemoteControlFlowLog(\"remote_control_qm_failed\",{errorName:e?.name,errorMessage:e?.message,errorCode:e?.code,stack:e?.stack});throw e}}";
+  const oldPv = "async function pv({appServerClient:e,desktopApiOptions:t,deviceKeyClient:n,globalState:r,requestRemoteControlEnrollmentStepUpToken:i}){await vv({appServerClient:e,deviceKeyClient:n,desktopApiOptions:t,enrollmentKey:hv(t),globalState:r,headers:await _v({action:`authorize remote control environments`,appServerClient:e,desktopApiOptions:t}),requestRemoteControlEnrollmentStepUpToken:i})}";
+  const newPv = "async function pv({appServerClient:e,desktopApiOptions:t,deviceKeyClient:n,globalState:r,requestRemoteControlEnrollmentStepUpToken:i}){__codexRemoteControlFlowLog(\"remote_control_qm_start\",{hasStepUp:typeof i==\"function\"});try{let a=await _v({action:`authorize remote control environments`,appServerClient:e,desktopApiOptions:t});__codexRemoteControlFlowLog(\"remote_control_qm_headers_ready\",{headerKeys:Object.keys(a).filter(e=>e.toLowerCase()!==\"authorization\").sort(),hasAuthorization:Object.keys(a).some(e=>e.toLowerCase()===\"authorization\"),hasChatGptAccountId:Object.keys(a).some(e=>e.toLowerCase()===\"chatgpt-account-id\")});await vv({appServerClient:e,deviceKeyClient:n,desktopApiOptions:t,enrollmentKey:hv(t),globalState:r,headers:a,requestRemoteControlEnrollmentStepUpToken:i});__codexRemoteControlFlowLog(\"remote_control_qm_completed\",{})}catch(e){__codexRemoteControlFlowLog(\"remote_control_qm_failed\",{errorName:e?.name,errorMessage:e?.message,errorCode:e?.code,stack:e?.stack});throw e}}";
   return {
     text: text.includes(oldBg)
       ? replaceExact(text, oldBg, newBg, "remote-control authorize flow")
@@ -319,7 +414,9 @@ function patchRemoteControlAuthorize(text) {
         ? replaceExact(text, oldUg, newUg, "remote-control authorize flow")
         : text.includes(oldN_)
           ? replaceExact(text, oldN_, newN_, "remote-control authorize flow")
-          : replaceExact(text, oldQ_, newQ_, "remote-control authorize flow"),
+          : text.includes(oldQ_)
+            ? replaceExact(text, oldQ_, newQ_, "remote-control authorize flow")
+            : replaceExact(text, oldPv, newPv, "remote-control authorize flow"),
     status: "patched",
   };
 }
@@ -337,6 +434,8 @@ function patchDeviceKeyCreationLogs(text) {
   const newCreate8604 = "async function F_({accountUserId:e,clientId:t,deviceKeyClient:n}){__codexRemoteControlFlowLog(\"remote_control_create_device_key_start\",{});try{let r=await n.createDeviceKey(`allow_os_protected_nonextractable`);return __codexRemoteControlFlowLog(\"remote_control_create_device_key_done\",{algorithm:r.algorithm,protectionClass:r.protectionClass}),{accountUserId:e,algorithm:r.algorithm,clientId:t,keyId:r.keyId,protectionClass:r.protectionClass,publicKeySpkiDerBase64:r.publicKeySpkiDerBase64}}catch(e){__codexRemoteControlFlowLog(\"remote_control_create_device_key_failed\",{errorName:e?.name,errorMessage:e?.message,errorCode:e?.code});throw e}}";
   const oldCreate2616 = "async function jv({accountUserId:e,clientId:t,deviceKeyClient:n}){let r=await n.createDeviceKey(`allow_os_protected_nonextractable`);return{accountUserId:e,algorithm:r.algorithm,clientId:t,keyId:r.keyId,protectionClass:r.protectionClass,publicKeySpkiDerBase64:r.publicKeySpkiDerBase64}}";
   const newCreate2616 = "async function jv({accountUserId:e,clientId:t,deviceKeyClient:n}){__codexRemoteControlFlowLog(\"remote_control_create_device_key_start\",{});try{let r=await n.createDeviceKey(`allow_os_protected_nonextractable`);return __codexRemoteControlFlowLog(\"remote_control_create_device_key_done\",{algorithm:r.algorithm,protectionClass:r.protectionClass}),{accountUserId:e,algorithm:r.algorithm,clientId:t,keyId:r.keyId,protectionClass:r.protectionClass,publicKeySpkiDerBase64:r.publicKeySpkiDerBase64}}catch(e){__codexRemoteControlFlowLog(\"remote_control_create_device_key_failed\",{errorName:e?.name,errorMessage:e?.message,errorCode:e?.code});throw e}}";
+  const oldCreate2623 = "async function Kv({accountUserId:e,clientId:t,deviceKeyClient:n}){let r=await n.createDeviceKey(`allow_os_protected_nonextractable`);return{accountUserId:e,algorithm:r.algorithm,clientId:t,keyId:r.keyId,protectionClass:r.protectionClass,publicKeySpkiDerBase64:r.publicKeySpkiDerBase64}}";
+  const newCreate2623 = "async function Kv({accountUserId:e,clientId:t,deviceKeyClient:n}){__codexRemoteControlFlowLog(\"remote_control_create_device_key_start\",{});try{let r=await n.createDeviceKey(`allow_os_protected_nonextractable`);return __codexRemoteControlFlowLog(\"remote_control_create_device_key_done\",{algorithm:r.algorithm,protectionClass:r.protectionClass}),{accountUserId:e,algorithm:r.algorithm,clientId:t,keyId:r.keyId,protectionClass:r.protectionClass,publicKeySpkiDerBase64:r.publicKeySpkiDerBase64}}catch(e){__codexRemoteControlFlowLog(\"remote_control_create_device_key_failed\",{errorName:e?.name,errorMessage:e?.message,errorCode:e?.code});throw e}}";
   return {
     text: text.includes(oldCreate)
       ? replaceExact(text, oldCreate, newCreate, "remote-control device key creation logs")
@@ -344,7 +443,9 @@ function patchDeviceKeyCreationLogs(text) {
         ? replaceExact(text, oldCreate2611, newCreate2611, "remote-control device key creation logs")
         : text.includes(oldCreate8604)
           ? replaceExact(text, oldCreate8604, newCreate8604, "remote-control device key creation logs")
-          : replaceExact(text, oldCreate2616, newCreate2616, "remote-control device key creation logs"),
+          : text.includes(oldCreate2616)
+            ? replaceExact(text, oldCreate2616, newCreate2616, "remote-control device key creation logs")
+            : replaceExact(text, oldCreate2623, newCreate2623, "remote-control device key creation logs"),
     status: "patched",
   };
 }
@@ -368,6 +469,11 @@ function patchSoftwareDeviceKeyFallback(text) {
     .replace("function pQ({resourcesPath:e})", "function L$({resourcesPath:e})")
     .replace("lQ((0,s.join)(e,`native`,uQ))", "N$((0,s.join)(e,`native`,P$))")
     .replaceAll("mQ(t)", "R$(t)");
+  const oldD0 = "function d0({resourcesPath:e}){let t=null,n=()=>{if(process.platform!==`darwin`)throw Error(`Remote control device keys are only available on macOS`);if(e==null)throw Error(`Remote control device keys require resourcesPath`);return t??=s0((0,s.join)(e,`native`,c0)),t};return{createDeviceKey:e=>n().createDeviceKey(e??`hardware_only`),deleteDeviceKey:e=>n().deleteDeviceKey(e),getDeviceKeyPublic:e=>n().getDeviceKeyPublic(e),signDeviceKey:async(e,t)=>{let r=f0(t);return{...await n().signDeviceKey(e,r),signedPayloadBase64:r.toString(`base64`)}}}}";
+  const newD0 = newPq
+    .replace("function pQ({resourcesPath:e})", "function d0({resourcesPath:e})")
+    .replace("lQ((0,s.join)(e,`native`,uQ))", "s0((0,s.join)(e,`native`,c0))")
+    .replaceAll("mQ(t)", "f0(t)");
   return {
     text: text.includes(oldWz)
       ? replaceExact(text, oldWz, newWz, "remote-control software device-key fallback")
@@ -375,7 +481,9 @@ function patchSoftwareDeviceKeyFallback(text) {
         ? replaceExact(text, oldPq, newPq, "remote-control software device-key fallback")
         : text.includes(oldEq)
           ? replaceExact(text, oldEq, newEq, "remote-control software device-key fallback")
-          : replaceExact(text, oldL$, newL$, "remote-control software device-key fallback"),
+          : text.includes(oldL$)
+            ? replaceExact(text, oldL$, newL$, "remote-control software device-key fallback")
+            : replaceExact(text, oldD0, newD0, "remote-control software device-key fallback"),
     status: "patched",
   };
 }
@@ -420,9 +528,15 @@ function patchMobileSetupMfaInfo403(text) {
     "async function k(){return S.parse(await _.safeGet(`/accounts/mfa_info`)).mfa_enabled_v2}";
   const newMfaInfo =
     "async function k(){try{return S.parse(await _.safeGet(`/accounts/mfa_info`)).mfa_enabled_v2}catch(e){if(e instanceof d&&e.status===403)return void\"remote_control_mfa_info_403_nonblocking\",!0;throw e}}";
+  const oldMfaInfo2623 =
+    "async function Te(){return D.parse(await p.safeGet(`/accounts/mfa_info`)).mfa_enabled_v2}";
+  const newMfaInfo2623 =
+    "async function Te(){try{return D.parse(await p.safeGet(`/accounts/mfa_info`)).mfa_enabled_v2}catch(e){if(e instanceof re&&e.status===403)return void\"remote_control_mfa_info_403_nonblocking\",!0;throw e}}";
   let next;
   if (text.includes(oldMfaInfo)) {
     next = replaceExact(text, oldMfaInfo, newMfaInfo, "mobile setup MFA info 403 fallback");
+  } else if (text.includes(oldMfaInfo2623)) {
+    next = replaceExact(text, oldMfaInfo2623, newMfaInfo2623, "mobile setup MFA info 403 fallback 26.623");
   } else {
     const mfaInfoPattern =
       /async function ([A-Za-z_$][\w$]*)\(\)\{return ([A-Za-z_$][\w$]*)\.parse\(await ([A-Za-z_$][\w$]*)\.safeGet\(`\/accounts\/mfa_info`\)\)\.mfa_enabled_v2\}/;
@@ -488,11 +602,17 @@ function patchMobileSetupFlow(text) {
     "async function F(e,t,n){return t===`local`?(await y(`set-local-remote-control-enabled`,{params:{enabled:n}}),k(e,n,{force:!0})):se(e,t,n)}";
   const newFlow2616 =
     "async function F(e,t,n){return t===`local`?(n&&(void\"remote_control_mobile_setup_authorize_before_enable\",await y(`authorize-remote-control-connections`,{params:{}})),await y(`set-local-remote-control-enabled`,{params:{enabled:n}}),k(e,n,{force:!0})):se(e,t,n)}";
+  const oldFlow2623 =
+    "async function je(e,t,n){return t===`local`?(await g(`set-local-remote-control-enabled`,{params:{enabled:n}}),W(e,n,{force:!0})):q(e,t,n)}";
+  const newFlow2623 =
+    "async function je(e,t,n){return t===`local`?(n&&(void\"remote_control_mobile_setup_authorize_before_enable\",await g(`authorize-remote-control-connections`,{params:{}})),await g(`set-local-remote-control-enabled`,{params:{enabled:n}}),W(e,n,{force:!0})):q(e,t,n)}";
   const next = text.includes(oldFlow)
     ? replaceExact(text, oldFlow, newFlow, "mobile setup authorize before local enable")
     : text.includes(oldFlow2611)
       ? replaceExact(text, oldFlow2611, newFlow2611, "mobile setup authorize before local enable")
-      : replaceExact(text, oldFlow2616, newFlow2616, "mobile setup authorize before local enable");
+      : text.includes(oldFlow2616)
+        ? replaceExact(text, oldFlow2616, newFlow2616, "mobile setup authorize before local enable")
+        : replaceExact(text, oldFlow2623, newFlow2623, "mobile setup authorize before local enable");
   if (!next.includes(marker) || !next.includes("authorize-remote-control-connections")) {
     throw new Error("mobile setup flow authorize-before-enable marker missing after patch");
   }
@@ -510,12 +630,16 @@ function patchRemoteConnectionsSettingsVisibility(text) {
   const newVisibility2611 = "We=(void\"remote_control_settings_force_control_this_pc_visible\",!0),";
   const oldVisibility2616 = "nt=Ne&&!0,";
   const newVisibility2616 = "nt=(void\"remote_control_settings_force_control_this_pc_visible\",!0),";
+  const oldVisibility2623 = "Ge=H&&!0,";
+  const newVisibility2623 = "Ge=(void\"remote_control_settings_force_control_this_pc_visible\",!0),";
   if (!next.includes(marker)) {
     next = next.includes(oldVisibility)
       ? replaceExact(next, oldVisibility, newVisibility, "remote connections local setup visibility")
       : next.includes(oldVisibility2611)
         ? replaceExact(next, oldVisibility2611, newVisibility2611, "remote connections local setup visibility")
-        : replaceExact(next, oldVisibility2616, newVisibility2616, "remote connections local setup visibility");
+        : next.includes(oldVisibility2616)
+          ? replaceExact(next, oldVisibility2616, newVisibility2616, "remote connections local setup visibility")
+          : replaceExact(next, oldVisibility2623, newVisibility2623, "remote connections local setup visibility");
     changed = true;
   }
   if (!next.includes(sectionMarker)) {
@@ -525,10 +649,21 @@ function patchRemoteConnectionsSettingsVisibility(text) {
     const oldSection2616 = "Ne=Xe(),X=!T,";
     const newSection2616 =
       "Ne=(void\"remote_control_settings_force_remote_control_section_visible\",!0),X=!T,";
+    const oldSection2623 = "H=jn(),W=!p,";
+    const newSection2623 =
+      "H=(void\"remote_control_settings_force_remote_control_section_visible\",!0),W=!p,";
     next = replaceExact(
       next,
-      next.includes(oldSection2611) ? oldSection2611 : oldSection2616,
-      next.includes(oldSection2611) ? newSection2611 : newSection2616,
+      next.includes(oldSection2611)
+        ? oldSection2611
+        : next.includes(oldSection2616)
+          ? oldSection2616
+          : oldSection2623,
+      next.includes(oldSection2611)
+        ? newSection2611
+        : next.includes(oldSection2616)
+          ? newSection2616
+          : newSection2623,
       "remote connections remote-control section visibility"
     );
     changed = true;
