@@ -156,7 +156,13 @@ If the Allow dialog fails and the newest native app-server logs show `remote con
 powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\skills\codex-windows-fast-patch\scripts\build-remote-control-native-replacement.ps1" -WorkRoot "<large-local-build-root>\native-remote"
 ```
 
-The build helper keeps the clone, Cargo cache, Rustup cache, temp directory, and target directory under `-WorkRoot`, applies `references\remote-control-native-replacement.patch`, builds `codex-cli` for `x86_64-pc-windows-msvc` with Rust `1.95.0-x86_64-pc-windows-msvc` and profile `dev-small`, and verifies native markers before printing `ReplacementResourceCodexExe`. Do not use GNU toolchain output for Windows MSIX replacement; use the MSVC target.
+If the phone reports the Codex environment is expired after a native replacement, inspect the original installed native version and rebuild from the matching Codex Rust source ref. For example, when the package native reports `codex-cli 0.142.4`, use:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\skills\codex-windows-fast-patch\scripts\build-remote-control-native-replacement.ps1" -WorkRoot "<large-local-build-root>\native-remote-0.142.4" -CodexSourceRef "rust-v0.142.4" -AppServerVersion "0.142.4"
+```
+
+The build helper keeps the clone, Cargo cache, Rustup cache, temp directory, and target directory under `-WorkRoot`, optionally checks out `-CodexSourceRef`, applies `references\remote-control-native-replacement.patch`, optionally sets the workspace package version with `-AppServerVersion`, builds `codex-cli` for `x86_64-pc-windows-msvc` with Rust `1.95.0-x86_64-pc-windows-msvc` and profile `dev-small`, and verifies native markers before printing `ReplacementResourceCodexExe`. Do not use GNU toolchain output for Windows MSIX replacement; use the MSVC target.
 
 Run a dry run first. Do not pass `-KeepWorkDir` unless you need to inspect failed patch artifacts; successful dry-runs should clean generated package and ASAR extraction output:
 
@@ -360,7 +366,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\ski
 
 Phone remote-control script options:
 
-- `scripts\build-remote-control-native-replacement.ps1 -WorkRoot <path>`: clone/patch/build the native replacement under the selected work root, keeping Cargo/Rustup/temp/target/source artifacts off the system drive when requested.
+- `scripts\build-remote-control-native-replacement.ps1 -WorkRoot <path>`: clone/patch/build the native replacement under the selected work root, keeping Cargo/Rustup/temp/target/source artifacts off the system drive when requested. Use `-CodexSourceRef` and `-AppServerVersion` when the phone/backend requires the replacement native to report a newer matching app-server version.
 - `scripts\patch-remote-control-windows-msix.ps1 -DryRun`: patch and validate extracted package without installing, then clean successful generated artifacts.
 - `-KeepWorkDir`: keep MSIX staging, ASAR extract, and script-local `npx` cache for debugging; avoid this on routine repairs because each kept run can consume multiple GB.
 - `-OutputRoot <path>`: optional large local build root; use it when the default temp/output drive is short on space.

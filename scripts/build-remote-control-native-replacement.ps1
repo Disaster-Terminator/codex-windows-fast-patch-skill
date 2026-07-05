@@ -4,6 +4,8 @@ param(
   [string]$WorkRoot,
 
   [string]$CodexRepoUrl = 'https://github.com/openai/codex.git',
+  [string]$CodexSourceRef,
+  [string]$AppServerVersion,
   [string]$SourceRoot,
   [string]$CacheRoot,
   [string]$TempRoot,
@@ -262,6 +264,78 @@ function Test-GitPatchCheck {
   return Invoke-NativeProcess -FilePath $GitPath -Arguments $arguments -CaptureOutput
 }
 
+function Test-GitWorktreeDirty {
+  param(
+    [Parameter(Mandatory = $true)][string]$GitPath,
+    [Parameter(Mandatory = $true)][string]$RepositoryRoot
+  )
+  $status = Invoke-NativeProcess -FilePath $GitPath -Arguments @('-C', $RepositoryRoot, 'status', '--porcelain') -CaptureOutput
+  if ($status.ExitCode -ne 0) {
+    Fail "failed to inspect Codex source git status (exit code $($status.ExitCode))"
+  }
+  return (-not [string]::IsNullOrWhiteSpace($status.Output))
+}
+
+function Checkout-CodexSourceRef {
+  param(
+    [Parameter(Mandatory = $true)][string]$GitPath,
+    [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+    [string]$SourceRef
+  )
+
+  $ref = $SourceRef.Trim()
+  if ([string]::IsNullOrWhiteSpace($ref)) {
+    return
+  }
+
+  $reverseCheck = Test-GitPatchCheck -GitPath $GitPath -RepositoryRoot $RepositoryRoot -PatchFile $PatchPath -Reverse
+  if ($reverseCheck.ExitCode -eq 0) {
+    Write-Log "native patch already applied; leaving existing source ref unchanged"
+    return
+  }
+
+  if (Test-GitWorktreeDirty -GitPath $GitPath -RepositoryRoot $RepositoryRoot) {
+    Fail "SourceRoot has uncommitted changes; cannot safely check out Codex source ref '$ref'. Use a clean SourceRoot or a new WorkRoot."
+  }
+
+  Write-Log "checking out Codex source ref: $ref"
+  Invoke-Checked -FilePath $GitPath -Arguments @('-C', $RepositoryRoot, 'fetch', '--depth', '1', 'origin', $ref) -ErrorMessage "failed to fetch Codex source ref '$ref'"
+  Invoke-Checked -FilePath $GitPath -Arguments @('-C', $RepositoryRoot, 'checkout', '--detach', 'FETCH_HEAD') -ErrorMessage "failed to check out Codex source ref '$ref'"
+}
+
+function Set-CargoWorkspacePackageVersion {
+  param(
+    [Parameter(Mandatory = $true)][string]$CargoManifestPath,
+    [string]$Version
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Version)) {
+    return
+  }
+  $versionValue = $Version.Trim()
+  if ($versionValue -notmatch '^[0-9A-Za-z][0-9A-Za-z.+-]*$') {
+    Fail "invalid AppServerVersion: $versionValue"
+  }
+
+  $text = Get-Content -Raw -LiteralPath $CargoManifestPath
+  $match = [regex]::Match($text, '(?ms)(^\[workspace\.package\]\s*?\r?\n)(.*?)(?=^\[|\z)')
+  if (-not $match.Success) {
+    Fail "Cargo workspace package section not found: $CargoManifestPath"
+  }
+
+  $section = $match.Groups[2].Value
+  if ($section -notmatch '(?m)^version\s*=') {
+    Fail "Cargo workspace package version not found: $CargoManifestPath"
+  }
+
+  $newSection = [regex]::Replace($section, '(?m)^version\s*=\s*"[^"]*"', "version = `"$versionValue`"", 1)
+  $newText = $text.Substring(0, $match.Groups[2].Index) + $newSection + $text.Substring($match.Groups[2].Index + $match.Groups[2].Length)
+  if ($newText -ne $text) {
+    Set-Content -LiteralPath $CargoManifestPath -Value $newText -NoNewline
+    Write-Log "set Cargo workspace package version for remote-control app-server: $versionValue"
+  }
+}
+
 function Test-PathUnderRoot {
   param(
     [Parameter(Mandatory = $true)][string]$Path,
@@ -388,6 +462,10 @@ if (-not (Test-Path -LiteralPath $gitDir -PathType Container)) {
   Fail "SourceRoot is not a git checkout: $SourceRoot"
 }
 
+if (-not [string]::IsNullOrWhiteSpace($CodexSourceRef)) {
+  Checkout-CodexSourceRef -GitPath $git -RepositoryRoot $SourceRoot -SourceRef $CodexSourceRef
+}
+
 if (-not $SkipPatch) {
   $reverseCheck = Test-GitPatchCheck -GitPath $git -RepositoryRoot $SourceRoot -PatchFile $PatchPath -Reverse
   if ($reverseCheck.ExitCode -eq 0) {
@@ -409,6 +487,7 @@ $CargoManifestPath = Join-Path $CargoWorkspaceRoot 'Cargo.toml'
 if (-not (Test-Path -LiteralPath $CargoManifestPath -PathType Leaf)) {
   Fail "Cargo.toml not found at expected Codex Rust workspace path: $CargoManifestPath"
 }
+Set-CargoWorkspacePackageVersion -CargoManifestPath $CargoManifestPath -Version $AppServerVersion
 
 $env:CARGO_HOME = Join-Path $CacheRoot 'cargo'
 $env:RUSTUP_HOME = Join-Path $CacheRoot 'rustup'
