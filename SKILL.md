@@ -64,7 +64,7 @@ Before choosing the full MSIX repack path, identify whether the current failure 
 
 If a repair can stop, uninstall, reinstall, repackage, or relaunch Codex Desktop, do not run it from the Codex Desktop session being repaired. Use an external Windows PowerShell session, the VS Code Codex extension, or another agent environment that will survive the Desktop restart.
 
-The target state is the Desktop Codex home: normally `$env:USERPROFILE\.codex`, and on the delegated Windows machine `C:\Users\admin\.codex`. Do not use an isolated CLI entrypoint such as `C:\Users\admin\.local\co\codex-iso.cmd` for Desktop repair decisions; that wrapper sets `CODEX_HOME=C:\Users\admin\.codex-cli`, and `.codex-cli` is not the Desktop plugin, marketplace, MCP, remote-control, or login state.
+The target state is the Desktop Codex home: normally `$env:USERPROFILE\.codex`. Do not use an isolated CLI entrypoint for Desktop repair decisions; if that wrapper sets `CODEX_HOME` to `$env:USERPROFILE\.codex-cli` or another isolated directory, it is not the Desktop plugin, marketplace, MCP, remote-control, or login state.
 
 Before starting from VS Code Codex or external PowerShell, confirm no User-level or Machine-level `CODEX_HOME` is set. Do not set global `CODEX_HOME`, do not copy `.codex` into `.codex-cli`, and do not expose or commit `auth.json`, API keys, OAuth tokens, MCP credentials, browser profiles, or local credential stores. Start with a Desktop-state backup, run read-only package/config/log checks, then run the relevant `-DryRun`. Only use `-Install`, full `repatch-codex-windows.ps1`, or targeted `*-windows-msix.ps1 -Install -Launch -InstallPrerequisites` after the dry run finds and validates the intended targets.
 
