@@ -229,7 +229,8 @@ function Invoke-ProcessWithTimeout {
 function Remove-DirectoryRobust {
   param(
     [Parameter(Mandatory = $true)][string]$Path,
-    [string]$RequiredRoot
+    [string]$RequiredRoot,
+    [switch]$BestEffort
   )
   if (-not (Test-Path -LiteralPath $Path)) {
     return
@@ -263,7 +264,12 @@ function Remove-DirectoryRobust {
     try {
       [System.IO.Directory]::Delete($resolved, $true)
     } catch {
-      Fail "failed to remove directory: $resolved ($($_.Exception.Message))"
+      $message = "failed to remove directory: $resolved ($($_.Exception.Message))"
+      if ($BestEffort) {
+        Write-Log "warning: $message"
+      } else {
+        Fail $message
+      }
     }
   }
 }
@@ -2026,7 +2032,7 @@ try {
 
   if ($CleanupAfter -and (Test-Path -LiteralPath $workRoot)) {
     Write-Log "cleanup build root: $workRoot"
-    Remove-DirectoryRobust -Path $workRoot -RequiredRoot $OutputRoot
+    Remove-DirectoryRobust -Path $workRoot -RequiredRoot $OutputRoot -BestEffort
   }
 
   Write-Log 'done'
@@ -2034,6 +2040,6 @@ try {
   if ($KeepWorkDir) {
     Write-Log "keeping workdir: $tempWork"
   } elseif (Test-Path -LiteralPath $tempWork) {
-    Remove-DirectoryRobust -Path $tempWork -RequiredRoot $workRoot
+    Remove-DirectoryRobust -Path $tempWork -RequiredRoot $workRoot -BestEffort
   }
 }

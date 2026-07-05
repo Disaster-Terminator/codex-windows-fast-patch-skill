@@ -107,6 +107,16 @@ Use another agent, external PowerShell, the Codex extension inside VS Code/Antig
 
 Simple rule: if the repair stops, uninstalls, reinstalls, or relaunches Codex Desktop, run it from another agent or external PowerShell. If it only changes local config, plugin cache, marketplace files, backups, or verification, the current Codex Desktop session can usually handle it.
 
+## Using The VS Code Codex Extension As An External Executor
+
+On Windows, if a repair will stop, uninstall, reinstall, repackage the MSIX, replace `app.asar`, replace `resources\codex.exe`, or restart Codex Desktop, run it from the VS Code Codex extension, external PowerShell, or another agent environment that will not be interrupted by the Desktop restart.
+
+The target is always the Codex Desktop state directory: by default `$env:USERPROFILE\.codex`, and on the delegated Windows machine `C:\Users\admin\.codex`. Do not treat `codex-iso` as the Desktop execution environment. In this machine setup, `C:\Users\admin\.local\co\codex-iso.cmd` sets `CODEX_HOME` to `C:\Users\admin\.codex-cli`; `.codex-cli` is isolated CLI state, not Desktop plugin, marketplace, MCP, remote-control, or login state.
+
+Before starting from the external executor, confirm there is no global `CODEX_HOME`. Do not copy or migrate `.codex` into `.codex-cli`, and do not commit or display `auth.json`, API keys, OAuth tokens, MCP credentials, browser profiles, or other local credentials. The recommended order is: back up Desktop state with `scripts\manage-codex-backups.ps1 -Action Backup`, run read-only checks and log triage, run the relevant script with `-DryRun`, and only then use the install path such as `repatch-codex-windows.ps1` or a targeted `*-windows-msix.ps1 -Install -Launch -InstallPrerequisites` after the dry run finds and validates the intended targets.
+
+The phone remote-control install path downloads Windows SDK BuildTools from NuGet when `makeappx.exe` / `signtool.exe` are missing. It does not force a local proxy by default; if the machine must use one, pass `-BuildToolsProxy "http://127.0.0.1:10808"` or set `CODEX_WINDOWS_SDK_BUILDTOOLS_PROXY`. If `curl download failed with exit code 7` appears, first check whether an explicitly configured local proxy is not listening.
+
 Example request: `Use the codex-windows-fast-patch skill to inspect and repair Codex Desktop Fast Mode, language/locale, Chrome browser_use, plugin marketplace, and Computer Use availability on this Windows machine.`
 
 Phone remote-control example request: `Use the codex-windows-fast-patch skill to repair Windows Codex Desktop phone remote control while preserving my third-party API provider and current conversation history. If large build artifacts are needed, keep them on D:\ or another non-system drive.`

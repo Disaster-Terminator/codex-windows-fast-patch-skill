@@ -108,6 +108,16 @@ Copy-Item -Recurse -Force -LiteralPath (Join-Path $source 'assets') -Destination
 
 简单判断规则：如果修复会停止、卸载、重装或重新启动 Codex Desktop，就用另一个 agent 或外部 PowerShell 来跑；如果只是修本地配置、插件缓存、marketplace、备份或验证，一般可以让当前 Codex Desktop 会话直接处理。
 
+## 用 VS Code Codex 扩展作为外部执行器
+
+在 Windows 上，如果修复会停止、卸载、重装、重新打包 MSIX、替换 `app.asar`、替换 `resources\codex.exe` 或重启 Codex Desktop，推荐从 VS Code 里的 Codex 扩展、外部 PowerShell，或其它不会被 Desktop 重启影响的 agent 环境执行。
+
+执行目标始终是 Codex Desktop 的状态目录：默认是 `$env:USERPROFILE\.codex`，在这台委派机器上是 `C:\Users\admin\.codex`。不要把 `codex-iso` 当成 Desktop 执行环境；这里的 `C:\Users\admin\.local\co\codex-iso.cmd` 会把 `CODEX_HOME` 设为 `C:\Users\admin\.codex-cli`，而 `.codex-cli` 只是隔离 CLI 状态，不是 Desktop 的插件、市场、MCP、远控或登录状态。
+
+外部执行器开始前先确认没有全局 `CODEX_HOME`。不要把 `.codex` 复制或迁移到 `.codex-cli`，不要提交或展示 `auth.json`、API key、OAuth token、MCP 凭据、浏览器资料或其它本地凭据。建议顺序是：先用 `scripts\manage-codex-backups.ps1 -Action Backup` 备份 Desktop 状态，再做只读检查和日志判断；需要 MSIX / ASAR 修复时先跑对应脚本的 `-DryRun`，只有 dry run 找到并验证目标后再运行安装路径，例如 `repatch-codex-windows.ps1` 或 targeted `*-windows-msix.ps1 -Install -Launch -InstallPrerequisites`。
+
+手机远控安装路径会在缺少 `makeappx.exe` / `signtool.exe` 时从 NuGet 下载 Windows SDK BuildTools。默认不强制使用本地代理；如果机器必须走代理，再显式传 `-BuildToolsProxy "http://127.0.0.1:10808"` 或设置 `CODEX_WINDOWS_SDK_BUILDTOOLS_PROXY`。如果遇到 `curl download failed with exit code 7`，先确认是否传了一个未监听的本地代理。
+
 一个典型请求是：
 
 ```text

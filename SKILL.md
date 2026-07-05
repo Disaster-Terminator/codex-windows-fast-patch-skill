@@ -60,6 +60,14 @@ Before choosing the full MSIX repack path, identify whether the current failure 
 - Do not put Phone Remote Control into the default full repatch path unless the user asked for it. It is an opt-in workflow because it can require isolated remote-control OAuth, ASAR changes, a native app-server replacement binary, SQLite enrollment cleanup, and post-pairing API endpoint diagnosis.
 - If evidence is mixed, use the lowest-disruption path first: run read-only triage, then `scripts\install-computer-use-local.ps1 -VerifyOnly` for local plugin evidence, restart Codex Desktop only if needed, and escalate to MSIX only when logs or extracted ASAR checks still show a closed gate.
 
+## External Executor For Desktop-Restarting Repairs
+
+If a repair can stop, uninstall, reinstall, repackage, or relaunch Codex Desktop, do not run it from the Codex Desktop session being repaired. Use an external Windows PowerShell session, the VS Code Codex extension, or another agent environment that will survive the Desktop restart.
+
+The target state is the Desktop Codex home: normally `$env:USERPROFILE\.codex`, and on the delegated Windows machine `C:\Users\admin\.codex`. Do not use an isolated CLI entrypoint such as `C:\Users\admin\.local\co\codex-iso.cmd` for Desktop repair decisions; that wrapper sets `CODEX_HOME=C:\Users\admin\.codex-cli`, and `.codex-cli` is not the Desktop plugin, marketplace, MCP, remote-control, or login state.
+
+Before starting from VS Code Codex or external PowerShell, confirm no User-level or Machine-level `CODEX_HOME` is set. Do not set global `CODEX_HOME`, do not copy `.codex` into `.codex-cli`, and do not expose or commit `auth.json`, API keys, OAuth tokens, MCP credentials, browser profiles, or local credential stores. Start with a Desktop-state backup, run read-only package/config/log checks, then run the relevant `-DryRun`. Only use `-Install`, full `repatch-codex-windows.ps1`, or targeted `*-windows-msix.ps1 -Install -Launch -InstallPrerequisites` after the dry run finds and validates the intended targets.
+
 ## Default Workflow
 
 1. If the task may modify `config.toml`, skills, marketplaces, or MCP server settings, create a state snapshot first:
@@ -173,6 +181,8 @@ Only after dry-run markers pass, install and relaunch:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\skills\codex-windows-fast-patch\scripts\patch-remote-control-windows-msix.ps1" -Install -Launch -InstallPrerequisites -ReplacementResourceCodexExe "<path-to-built-codex.exe>"
 ```
+
+When `makeappx.exe` / `signtool.exe` are missing, the install path downloads Windows SDK BuildTools from NuGet. Do not hard-code a local proxy for this download. Use the default direct/env-proxy path first; only pass `-BuildToolsProxy "http://127.0.0.1:10808"` or set `CODEX_WINDOWS_SDK_BUILDTOOLS_PROXY` when that proxy is known to be listening. `curl download failed with exit code 7` usually means the selected proxy endpoint refused the connection.
 
 If an install attempt is interrupted after uninstall/signing and `Get-AppxPackage -Name OpenAI.Codex` returns no package, do not rebuild first. Install the existing patched MSIX from the selected `-OutputRoot` if it exists:
 
