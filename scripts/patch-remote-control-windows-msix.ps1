@@ -5,6 +5,7 @@ param(
   [switch]$KeepWorkDir,
   [switch]$ForceRebuild,
   [switch]$InstallPrerequisites,
+  [string]$BuildToolsProxy = $env:CODEX_WINDOWS_SDK_BUILDTOOLS_PROXY,
   [string]$ReplacementResourceCodexExe,
   [string]$OutputRoot = (Join-Path $env:TEMP 'codex-remote-control-msix-patch')
 )
@@ -150,9 +151,17 @@ function Install-WindowsSdkBuildToolsViaNuGet {
       Remove-Item -LiteralPath $nupkg -Force
     }
     Write-Log "downloading Windows SDK BuildTools from NuGet: $version"
+    $proxy = if ($BuildToolsProxy) { $BuildToolsProxy.Trim() } else { '' }
     $curl = Get-Command curl.exe -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($curl) {
-      & $curl.Source -L --proxy http://127.0.0.1:10808 --connect-timeout 30 --max-time 240 -o $nupkg $url
+      $curlArgs = @('-L', '--connect-timeout', '30', '--max-time', '240', '-o', $nupkg, $url)
+      if ($proxy) {
+        Write-Log "using explicit BuildTools proxy: $proxy"
+        $curlArgs = @('-L', '--proxy', $proxy, '--connect-timeout', '30', '--max-time', '240', '-o', $nupkg, $url)
+      } else {
+        Write-Log 'downloading Windows SDK BuildTools without an explicit proxy'
+      }
+      & $curl.Source @curlArgs
       if ($LASTEXITCODE -ne 0) {
         Fail "curl download failed with exit code $LASTEXITCODE"
       }
@@ -160,7 +169,13 @@ function Install-WindowsSdkBuildToolsViaNuGet {
       $oldProgress = $ProgressPreference
       try {
         $ProgressPreference = 'SilentlyContinue'
-        Invoke-WebRequest -Uri $url -OutFile $nupkg -UseBasicParsing -TimeoutSec 240 -Proxy 'http://127.0.0.1:10808'
+        if ($proxy) {
+          Write-Log "using explicit BuildTools proxy: $proxy"
+          Invoke-WebRequest -Uri $url -OutFile $nupkg -UseBasicParsing -TimeoutSec 240 -Proxy $proxy
+        } else {
+          Write-Log 'downloading Windows SDK BuildTools without an explicit proxy'
+          Invoke-WebRequest -Uri $url -OutFile $nupkg -UseBasicParsing -TimeoutSec 240
+        }
       } finally {
         $ProgressPreference = $oldProgress
       }

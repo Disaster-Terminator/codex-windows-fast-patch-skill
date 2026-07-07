@@ -140,6 +140,48 @@ function Copy-DirectoryDataOnly {
   }
 }
 
+function Copy-DirectoryMissingOnly {
+  param(
+    [string]$Source,
+    [string]$Destination
+  )
+
+  if (-not (Test-Path -LiteralPath $Source -PathType Container)) {
+    throw "copy source directory not found: $Source"
+  }
+
+  Resolve-OrCreateDirectory $Destination | Out-Null
+  $sourceRoot = (Resolve-Path -LiteralPath $Source).ProviderPath
+  $destinationRoot = (Resolve-Path -LiteralPath $Destination).ProviderPath
+
+  $robocopy = Get-Command robocopy.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($robocopy) {
+    & $robocopy.Source $sourceRoot $destinationRoot /E /XC /XN /XO /R:0 /W:0 /NFL /NDL /NP | Out-Null
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -gt 7) {
+      throw "robocopy missing-only overlay failed with exit code $exitCode"
+    }
+    return
+  }
+
+  foreach ($dir in Get-ChildItem -LiteralPath $sourceRoot -Recurse -Directory -Force) {
+    $relative = $dir.FullName.Substring($sourceRoot.Length).TrimStart('\')
+    Resolve-OrCreateDirectory (Join-Path $destinationRoot $relative) | Out-Null
+  }
+
+  foreach ($file in Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -Force) {
+    $relative = $file.FullName.Substring($sourceRoot.Length).TrimStart('\')
+    $target = Join-Path $destinationRoot $relative
+    if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
+      $targetParent = Split-Path -Parent $target
+      Resolve-OrCreateDirectory $targetParent | Out-Null
+      [System.IO.Directory]::CreateDirectory($targetParent) | Out-Null
+      [System.IO.File]::WriteAllBytes($target, [System.IO.File]::ReadAllBytes($file.FullName))
+      [System.IO.File]::SetLastWriteTime($target, $file.LastWriteTime)
+    }
+  }
+}
+
 function Set-TomlTable {
   param(
     [string]$ConfigPath,
@@ -952,12 +994,23 @@ function Sync-OpenAiBundledPluginCache {
 
   Stop-OpenAiBundledExtensionHosts @($sourcePluginRoot, $cacheRoot)
 
+  Write-Log "syncing bundled plugin cache: $PluginName@$version"
+  $useMissingOnlyOverlay = $false
   if (Test-Path -LiteralPath $cacheVersionRoot) {
-    Remove-ReparsePointOrDirectory $cacheVersionRoot
+    try {
+      Remove-ReparsePointOrDirectory $cacheVersionRoot
+    } catch {
+      $useMissingOnlyOverlay = $true
+      Write-Log "warning: bundled plugin cache is locked; overlaying missing files only: $cacheVersionRoot"
+      Write-Log "warning: cache delete failure: $($_.Exception.Message)"
+    }
   }
 
-  Write-Log "syncing bundled plugin cache: $PluginName@$version"
-  Copy-DirectoryDataOnly $sourcePluginRoot $cacheVersionRoot
+  if ($useMissingOnlyOverlay) {
+    Copy-DirectoryMissingOnly $sourcePluginRoot $cacheVersionRoot
+  } else {
+    Copy-DirectoryDataOnly $sourcePluginRoot $cacheVersionRoot
+  }
 
   if (Test-Path -LiteralPath $latestPath) {
     Remove-ReparsePointOrDirectory $latestPath

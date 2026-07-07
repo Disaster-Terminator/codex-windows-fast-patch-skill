@@ -4,6 +4,8 @@ param(
   [string]$WorkRoot,
 
   [string]$CodexRepoUrl = 'https://github.com/openai/codex.git',
+  [string]$CodexSourceRef,
+  [string]$AppServerVersion,
   [string]$SourceRoot,
   [string]$CacheRoot,
   [string]$TempRoot,
@@ -45,6 +47,166 @@ function Get-RequiredCommand {
   return $cmd.Source
 }
 
+function Import-MsvcBuildEnvironment {
+  if ($BuildTarget -notlike '*windows-msvc') {
+    return
+  }
+  $cl = Get-Command 'cl.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+  $link = Get-Command 'link.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($cl -and $link) {
+    Write-Log "MSVC build environment already available: $($cl.Source)"
+    return
+  }
+
+  $vswhereCandidates = @(
+    (Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'),
+    (Join-Path $env:ProgramFiles 'Microsoft Visual Studio\Installer\vswhere.exe')
+  ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) }
+  if ($vswhereCandidates.Count -eq 0) {
+    Fail "MSVC Build Tools were not found. Install Visual Studio Build Tools 2022 with the C++ workload, then rerun this script. winget example: winget install --id Microsoft.VisualStudio.2022.BuildTools --source winget --override `"--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended`""
+  }
+
+  $vswhere = $vswhereCandidates | Select-Object -First 1
+  $installationPath = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1)
+  if ([string]::IsNullOrWhiteSpace($installationPath)) {
+    Fail "Visual Studio Build Tools were found, but the C++ x64 tools are missing. Install the Microsoft.VisualStudio.Workload.VCTools workload, then rerun this script."
+  }
+  $vcvars = Join-Path $installationPath 'VC\Auxiliary\Build\vcvars64.bat'
+  if (-not (Test-Path -LiteralPath $vcvars -PathType Leaf)) {
+    Fail "vcvars64.bat not found under Visual Studio installation: $vcvars"
+  }
+
+  Write-Log "loading MSVC build environment: $vcvars"
+  $envLines = & cmd.exe /s /c "`"$vcvars`" >nul && set"
+  if ($LASTEXITCODE -ne 0) {
+    Fail "failed to load MSVC build environment from vcvars64.bat (exit code $LASTEXITCODE)"
+  }
+  foreach ($line in $envLines) {
+    $idx = $line.IndexOf('=')
+    if ($idx -le 0) {
+      continue
+    }
+    [Environment]::SetEnvironmentVariable($line.Substring(0, $idx), $line.Substring($idx + 1), 'Process')
+  }
+
+  $cl = Get-Command 'cl.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+  $link = Get-Command 'link.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not ($cl -and $link)) {
+    Fail "MSVC build environment did not provide cl.exe and link.exe after loading vcvars64.bat."
+  }
+  Write-Log "MSVC build environment loaded: $($cl.Source)"
+}
+
+function ConvertTo-NativeArgumentString {
+  param([AllowNull()][string]$Argument)
+  if ($null -eq $Argument) {
+    return '""'
+  }
+  $arg = [string]$Argument
+  if ($arg.Length -gt 0 -and $arg -notmatch '[\s"]') {
+    return $arg
+  }
+
+  $result = New-Object System.Text.StringBuilder
+  [void]$result.Append('"')
+  $backslashes = 0
+  foreach ($ch in $arg.ToCharArray()) {
+    if ($ch -eq '\') {
+      $backslashes++
+      continue
+    }
+    if ($ch -eq '"') {
+      [void]$result.Append(('\' * (($backslashes * 2) + 1)))
+      [void]$result.Append('"')
+      $backslashes = 0
+      continue
+    }
+    if ($backslashes -gt 0) {
+      [void]$result.Append(('\' * $backslashes))
+      $backslashes = 0
+    }
+    [void]$result.Append($ch)
+  }
+  if ($backslashes -gt 0) {
+    [void]$result.Append(('\' * ($backslashes * 2)))
+  }
+  [void]$result.Append('"')
+  return $result.ToString()
+}
+
+function Join-NativeArgumentString {
+  param([string[]]$Arguments)
+  $quoted = New-Object System.Collections.Generic.List[string]
+  foreach ($argument in $Arguments) {
+    $quoted.Add((ConvertTo-NativeArgumentString -Argument $argument))
+  }
+  return ($quoted -join ' ')
+}
+
+function Invoke-NativeProcess {
+  param(
+    [Parameter(Mandatory = $true)][string]$FilePath,
+    [Parameter(Mandatory = $true)][string[]]$Arguments,
+    [string]$WorkingDirectory,
+    [switch]$CaptureOutput
+  )
+
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $FilePath
+  $psi.Arguments = Join-NativeArgumentString -Arguments $Arguments
+  if ($WorkingDirectory) {
+    $psi.WorkingDirectory = $WorkingDirectory
+  }
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+
+  $process = New-Object System.Diagnostics.Process
+  $process.StartInfo = $psi
+
+  if ($CaptureOutput) {
+    [void]$process.Start()
+    $stdout = $process.StandardOutput.ReadToEnd()
+    $stderr = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
+    return [pscustomobject]@{
+      ExitCode = $process.ExitCode
+      Output = (($stdout, $stderr | Where-Object { -not [string]::IsNullOrEmpty($_) }) -join [Environment]::NewLine)
+    }
+  }
+
+  $stdoutHandler = [System.Diagnostics.DataReceivedEventHandler]{
+    param($sender, $eventArgs)
+    if ($null -ne $eventArgs.Data) {
+      Write-Host $eventArgs.Data
+    }
+  }
+  $stderrHandler = [System.Diagnostics.DataReceivedEventHandler]{
+    param($sender, $eventArgs)
+    if ($null -ne $eventArgs.Data) {
+      Write-Host $eventArgs.Data
+    }
+  }
+  $process.add_OutputDataReceived($stdoutHandler)
+  $process.add_ErrorDataReceived($stderrHandler)
+  try {
+    [void]$process.Start()
+    $process.BeginOutputReadLine()
+    $process.BeginErrorReadLine()
+    $process.WaitForExit()
+    # WaitForExit() again flushes async event handlers on Windows PowerShell.
+    $process.WaitForExit()
+    return [pscustomobject]@{
+      ExitCode = $process.ExitCode
+      Output = ''
+    }
+  } finally {
+    $process.remove_OutputDataReceived($stdoutHandler)
+    $process.remove_ErrorDataReceived($stderrHandler)
+    $process.Dispose()
+  }
+}
+
 function Invoke-Checked {
   param(
     [Parameter(Mandatory = $true)][string]$FilePath,
@@ -54,18 +216,123 @@ function Invoke-Checked {
   )
   $prefix = if ($WorkingDirectory) { "[$WorkingDirectory] " } else { '' }
   Write-Log "$prefix$FilePath $($Arguments -join ' ')"
-  if ($WorkingDirectory) {
-    Push-Location -LiteralPath $WorkingDirectory
-    try {
-      & $FilePath @Arguments 2>&1 | ForEach-Object { $_ }
-    } finally {
-      Pop-Location
-    }
-  } else {
-    & $FilePath @Arguments 2>&1 | ForEach-Object { $_ }
+  $oldErrorActionPreference = $ErrorActionPreference
+  $hadNativeErrorPreference = Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue
+  if ($hadNativeErrorPreference) {
+    $oldNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
   }
-  if ($LASTEXITCODE -ne 0) {
-    Fail "$ErrorMessage (exit code $LASTEXITCODE)"
+  try {
+    $ErrorActionPreference = 'Continue'
+    if ($hadNativeErrorPreference) {
+      $PSNativeCommandUseErrorActionPreference = $false
+    }
+    if ($WorkingDirectory) {
+      Push-Location -LiteralPath $WorkingDirectory
+      try {
+        & $FilePath @Arguments
+        $exitCode = $LASTEXITCODE
+      } finally {
+        Pop-Location
+      }
+    } else {
+      & $FilePath @Arguments
+      $exitCode = $LASTEXITCODE
+    }
+  } finally {
+    $ErrorActionPreference = $oldErrorActionPreference
+    if ($hadNativeErrorPreference) {
+      $PSNativeCommandUseErrorActionPreference = $oldNativeErrorPreference
+    }
+  }
+  if ($exitCode -ne 0) {
+    Fail "$ErrorMessage (exit code $exitCode)"
+  }
+}
+
+function Test-GitPatchCheck {
+  param(
+    [Parameter(Mandatory = $true)][string]$GitPath,
+    [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+    [Parameter(Mandatory = $true)][string]$PatchFile,
+    [switch]$Reverse
+  )
+  $arguments = @('-C', $RepositoryRoot, 'apply')
+  if ($Reverse) {
+    $arguments += '--reverse'
+  }
+  $arguments += @('--check', $PatchFile)
+  return Invoke-NativeProcess -FilePath $GitPath -Arguments $arguments -CaptureOutput
+}
+
+function Test-GitWorktreeDirty {
+  param(
+    [Parameter(Mandatory = $true)][string]$GitPath,
+    [Parameter(Mandatory = $true)][string]$RepositoryRoot
+  )
+  $status = Invoke-NativeProcess -FilePath $GitPath -Arguments @('-C', $RepositoryRoot, 'status', '--porcelain') -CaptureOutput
+  if ($status.ExitCode -ne 0) {
+    Fail "failed to inspect Codex source git status (exit code $($status.ExitCode))"
+  }
+  return (-not [string]::IsNullOrWhiteSpace($status.Output))
+}
+
+function Checkout-CodexSourceRef {
+  param(
+    [Parameter(Mandatory = $true)][string]$GitPath,
+    [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+    [string]$SourceRef
+  )
+
+  $ref = $SourceRef.Trim()
+  if ([string]::IsNullOrWhiteSpace($ref)) {
+    return
+  }
+
+  $reverseCheck = Test-GitPatchCheck -GitPath $GitPath -RepositoryRoot $RepositoryRoot -PatchFile $PatchPath -Reverse
+  if ($reverseCheck.ExitCode -eq 0) {
+    Write-Log "native patch already applied; leaving existing source ref unchanged"
+    return
+  }
+
+  if (Test-GitWorktreeDirty -GitPath $GitPath -RepositoryRoot $RepositoryRoot) {
+    Fail "SourceRoot has uncommitted changes; cannot safely check out Codex source ref '$ref'. Use a clean SourceRoot or a new WorkRoot."
+  }
+
+  Write-Log "checking out Codex source ref: $ref"
+  Invoke-Checked -FilePath $GitPath -Arguments @('-C', $RepositoryRoot, 'fetch', '--depth', '1', 'origin', $ref) -ErrorMessage "failed to fetch Codex source ref '$ref'"
+  Invoke-Checked -FilePath $GitPath -Arguments @('-C', $RepositoryRoot, 'checkout', '--detach', 'FETCH_HEAD') -ErrorMessage "failed to check out Codex source ref '$ref'"
+}
+
+function Set-CargoWorkspacePackageVersion {
+  param(
+    [Parameter(Mandatory = $true)][string]$CargoManifestPath,
+    [string]$Version
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Version)) {
+    return
+  }
+  $versionValue = $Version.Trim()
+  if ($versionValue -notmatch '^[0-9A-Za-z][0-9A-Za-z.+-]*$') {
+    Fail "invalid AppServerVersion: $versionValue"
+  }
+
+  $text = Get-Content -Raw -LiteralPath $CargoManifestPath
+  $match = [regex]::Match($text, '(?ms)(^\[workspace\.package\]\s*?\r?\n)(.*?)(?=^\[|\z)')
+  if (-not $match.Success) {
+    Fail "Cargo workspace package section not found: $CargoManifestPath"
+  }
+
+  $section = $match.Groups[2].Value
+  if ($section -notmatch '(?m)^version\s*=') {
+    Fail "Cargo workspace package version not found: $CargoManifestPath"
+  }
+
+  $newSection = [regex]::Replace($section, '(?m)^version\s*=\s*"[^"]*"', "version = `"$versionValue`"", 1)
+  $newText = $text.Substring(0, $match.Groups[2].Index) + $newSection + $text.Substring($match.Groups[2].Index + $match.Groups[2].Length)
+  if ($newText -ne $text) {
+    Set-Content -LiteralPath $CargoManifestPath -Value $newText -NoNewline
+    Write-Log "set Cargo workspace package version for remote-control app-server: $versionValue"
   }
 }
 
@@ -169,6 +436,7 @@ New-Item -ItemType Directory -Force -Path $WorkRoot, $CacheRoot, $TempRoot, $Tar
 
 $git = Get-RequiredCommand 'git'
 $cargo = Get-RequiredCommand 'cargo'
+Import-MsvcBuildEnvironment
 
 if (-not $SkipClone) {
   if (-not (Test-Path -LiteralPath $SourceRoot -PathType Container)) {
@@ -194,15 +462,32 @@ if (-not (Test-Path -LiteralPath $gitDir -PathType Container)) {
   Fail "SourceRoot is not a git checkout: $SourceRoot"
 }
 
+if (-not [string]::IsNullOrWhiteSpace($CodexSourceRef)) {
+  Checkout-CodexSourceRef -GitPath $git -RepositoryRoot $SourceRoot -SourceRef $CodexSourceRef
+}
+
 if (-not $SkipPatch) {
-  & $git -C $SourceRoot apply --reverse --check $PatchPath 2>$null
-  if ($LASTEXITCODE -eq 0) {
+  $reverseCheck = Test-GitPatchCheck -GitPath $git -RepositoryRoot $SourceRoot -PatchFile $PatchPath -Reverse
+  if ($reverseCheck.ExitCode -eq 0) {
     Write-Log "native patch already applied"
   } else {
-    Invoke-Checked -FilePath $git -Arguments @('-C', $SourceRoot, 'apply', '--check', $PatchPath) -ErrorMessage 'native patch does not apply cleanly'
+    $applyCheck = Test-GitPatchCheck -GitPath $git -RepositoryRoot $SourceRoot -PatchFile $PatchPath
+    if ($applyCheck.ExitCode -ne 0) {
+      if (-not [string]::IsNullOrWhiteSpace($applyCheck.Output)) {
+        Write-Host $applyCheck.Output
+      }
+      Fail "native patch does not apply cleanly (exit code $($applyCheck.ExitCode))"
+    }
     Invoke-Checked -FilePath $git -Arguments @('-C', $SourceRoot, 'apply', $PatchPath) -ErrorMessage 'failed to apply native patch'
   }
 }
+
+$CargoWorkspaceRoot = Join-Path $SourceRoot 'codex-rs'
+$CargoManifestPath = Join-Path $CargoWorkspaceRoot 'Cargo.toml'
+if (-not (Test-Path -LiteralPath $CargoManifestPath -PathType Leaf)) {
+  Fail "Cargo.toml not found at expected Codex Rust workspace path: $CargoManifestPath"
+}
+Set-CargoWorkspacePackageVersion -CargoManifestPath $CargoManifestPath -Version $AppServerVersion
 
 $env:CARGO_HOME = Join-Path $CacheRoot 'cargo'
 $env:RUSTUP_HOME = Join-Path $CacheRoot 'rustup'
@@ -226,7 +511,7 @@ if (-not $SkipBuild) {
     'codex-cli',
     '--target',
     $BuildTarget
-  ) -ErrorMessage 'failed to build patched native Codex app-server binary' -WorkingDirectory $SourceRoot
+  ) -ErrorMessage 'failed to build patched native Codex app-server binary' -WorkingDirectory $CargoWorkspaceRoot
 }
 
 $builtExe = Join-Path $TargetRoot "$BuildTarget\$BuildProfile\codex.exe"

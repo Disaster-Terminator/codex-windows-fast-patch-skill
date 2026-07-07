@@ -41,7 +41,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\ski
 6. If the Allow dialog fails and native logs show `remote control requires ChatGPT authentication; API key auth is not supported`, build a patched native app-server binary first. Use a work root on a large local drive if the user does not want system-drive space consumed:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\skills\codex-windows-fast-patch\scripts\build-remote-control-native-replacement.ps1" -WorkRoot "<large-local-build-root>\native-remote"
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\skills\codex-windows-fast-patch\scripts\build-remote-control-native-replacement.ps1" -WorkRoot "<large-local-build-root>\native-remote-0.142.4" -CodexSourceRef "rust-v0.142.4" -AppServerVersion "0.142.4"
 ```
 
 Use the printed `ReplacementResourceCodexExe` value with `patch-remote-control-windows-msix.ps1 -ReplacementResourceCodexExe`. The helper keeps the clone, Cargo cache, Rustup cache, temp, and target output under `-WorkRoot`, applies `references\remote-control-native-replacement.patch`, builds `codex-cli` with Rust `1.95.0-x86_64-pc-windows-msvc`, target `x86_64-pc-windows-msvc`, and profile `dev-small`, then verifies native markers. The GNU toolchain is not suitable for this Windows MSIX replacement path.
@@ -120,7 +120,7 @@ For 26.609-style Windows builds, the known native fixes are:
 - Try real Codex home candidates for isolated auth: `auth_manager.codex_home()`, `CODEX_HOME`, `%USERPROFILE%\.codex`, and `%HOME%\.codex`. Log candidate paths so a future failure proves whether the native app-server looked in the actual user home.
 - In `app-server-transport/src/transport/remote_control/websocket.rs`, enable the `tungstenite` proxy feature and connect remote-control WebSockets through `HTTPS_PROXY`/`HTTP_PROXY` when set, with a local optional v2rayN fallback at `http://127.0.0.1:10808`. The fallback must be disableable with `CODEX_REMOTE_CONTROL_DISABLE_V2RAYN_PROXY_FALLBACK=1`.
 - In workspace `Cargo.toml`, make sure `env!("CARGO_PKG_VERSION")` used by server enrollment is not `0.0.0`. For the verified 26.609.41114 build, `0.140.0-alpha.2` avoided the phone-side `Codex version expired` state.
-- For 26.623.9142, a verified native replacement used `references\remote-control-native-replacement.patch` and workspace package version `0.133.0`; it fixed the API-key main-auth rejection by loading isolated `.codex\remote.json` and added process-local proxy fallback markers for WebSocket connection diagnostics.
+- For 26.623.9142, the replacement native must report an app-server version accepted by the phone/backend. A `0.133.0` replacement can fix the API-key main-auth rejection but still leave the phone stuck on `Update desktop app to connect` / version-expired UI. Rebuild from the matching Codex Rust source tag, such as `rust-v0.142.4` for a package whose bundled native reports `codex-cli 0.142.4`, and set the workspace package version to the same app-server version.
 
 Do not claim a binary is fixed because it was rebuilt. Check markers in the actual file that will be copied to `app\resources\codex.exe`.
 
@@ -196,7 +196,7 @@ Action:
 
 - Do not switch global `model_provider` or global Desktop auth to ChatGPT. That can hide history or break the user's API routing.
 - Do not repeat ASAR-only repacks after this log appears. The native app-server rejects API-key main auth before remote-control connection can use the isolated bearer.
-- Build a native replacement with `scripts\build-remote-control-native-replacement.ps1 -WorkRoot "<large-local-build-root>\native-remote"`.
+- Build a native replacement with `scripts\build-remote-control-native-replacement.ps1 -WorkRoot "<large-local-build-root>\native-remote-<version>" -CodexSourceRef "rust-v<version>" -AppServerVersion "<version>"` when a phone/backend minimum version is implicated.
 - Install it through `scripts\patch-remote-control-windows-msix.ps1 -ReplacementResourceCodexExe "<built-codex.exe>" -Install -Launch -InstallPrerequisites`.
 - Verify the live installed `app\resources\codex.exe` contains `remote_control_app_server_isolated_oauth_used` and `remote_control_native_remote_json_first`, then verify logs from the WindowsApps app-server process show isolated remote auth from `.codex\remote.json`.
 - If the same `API key auth is not supported` string remains in `logs_2.sqlite`, filter by `pid` and process path. Old Antigravity/VS Code extension app-server processes can keep logging the old failure after the WindowsApps package is fixed.
@@ -228,7 +228,7 @@ Symptoms:
 Action:
 
 - Check the replacement native `codex.exe --version`.
-- If it reports `0.0.0`, rebuild with a valid workspace package version.
+- If it reports `0.0.0`, or an older app-server version than the bundled native from the installed Desktop package, rebuild with a matching Codex Rust source ref and workspace package version. For example, if the original installed native reports `codex-cli 0.142.4`, build from `rust-v0.142.4` and make the patched replacement report `codex-cli 0.142.4`.
 - Back up `%USERPROFILE%\.codex\sqlite\state_5.sqlite`, clear stale `remote_control_enrollments`, relaunch Desktop, and generate a fresh QR. Do not reuse an enrollment created by a version-broken binary.
 
 ### Phone Message Reaches Desktop But Model Request Hits The Wrong API Endpoint
