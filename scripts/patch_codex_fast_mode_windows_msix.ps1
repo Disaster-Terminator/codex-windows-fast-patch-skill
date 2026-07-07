@@ -1028,36 +1028,53 @@ const fs = require('node:fs');
 const file = process.argv[2];
 const text = fs.readFileSync(file, 'utf8');
 
-const patchedMarker = 'codex_windows_bundled_marketplace_copy_fallback';
-if (text.includes(patchedMarker)) {
+const copyPatchedMarker = 'codex_windows_bundled_marketplace_copy_fallback';
+const sitesPatchedMarker = 'codex_windows_sites_bundled_plugin_available';
+let after = text;
+let changed = false;
+
+if (!after.includes(copyPatchedMarker)) {
+  const originalRe = /async function ([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{if\(([A-Za-z_$][\w$]*)\.default\.platform===`darwin`\)\{await ([A-Za-z_$][\w$]*)\(`ditto`,\[`--noqtn`,\2,\3\]\);return\}await ([A-Za-z_$][\w$]*)\.default\.cp\(\2,\3,\{recursive:!0,verbatimSymlinks:!0\}\)\}/;
+  const match = after.match(originalRe);
+  if (!match) {
+    process.stderr.write('bundled-marketplace-copy-target-not-found\n');
+    process.exit(2);
+  }
+
+  const matchIndex = match.index ?? 0;
+  const searchStart = Math.max(0, matchIndex - 2500);
+  const searchEnd = Math.min(after.length, matchIndex + 2500);
+  const nearby = after.slice(searchStart, searchEnd);
+  const pathMatch = nearby.match(/\(0,([A-Za-z_$][\w$]*)\.join\)\(/) || after.match(/\(0,([A-Za-z_$][\w$]*)\.join\)\(/);
+  if (!pathMatch) {
+    process.stderr.write('bundled-marketplace-copy-path-var-not-found\n');
+    process.exit(2);
+  }
+
+  const [, fn, sourceArg, targetArg, platformVar, dittoFn, fsVar] = match;
+  const pathVar = pathMatch[1];
+  const fallbackFn = `codexWindowsBundledMarketplaceCopyFallback`;
+  const replacement = `async function ${fn}(${sourceArg},${targetArg}){if(${platformVar}.default.platform===\`darwin\`){await ${dittoFn}(\`ditto\`,[\`--noqtn\`,${sourceArg},${targetArg}]);return}try{await ${fsVar}.default.cp(${sourceArg},${targetArg},{recursive:!0,verbatimSymlinks:!0});return}catch(n){if(${platformVar}.default.platform!==\`win32\`)throw n;try{console.warn(\`${copyPatchedMarker}\`,n)}catch{}}async function ${fallbackFn}(e,t){let n=await ${fsVar}.default.lstat(e);if(n.isDirectory()){await ${fsVar}.default.mkdir(t,{recursive:!0});for(let r of await ${fsVar}.default.readdir(e))await ${fallbackFn}((0,${pathVar}.join)(e,r),(0,${pathVar}.join)(t,r));return}if(n.isSymbolicLink()){let r=await ${fsVar}.default.readlink(e);try{await ${fsVar}.default.symlink(r,t)}catch(e){if(e?.code!==\`EEXIST\`)throw e}return}await ${fsVar}.default.mkdir((0,${pathVar}.dirname)(t),{recursive:!0});let r=await ${fsVar}.default.readFile(e);await ${fsVar}.default.writeFile(t,r);try{await ${fsVar}.default.chmod(t,n.mode)}catch{}}await ${fallbackFn}(${sourceArg},${targetArg})}`;
+  after = after.replace(originalRe, replacement);
+  changed = true;
+}
+
+if (!after.includes(sitesPatchedMarker)) {
+  const sitesAvailabilityRe = /isAvailable:\(\{features:([A-Za-z_$][\w$]*)\}\)=>\1\.sites/;
+  if (!sitesAvailabilityRe.test(after)) {
+    process.stderr.write('bundled-marketplace-sites-availability-target-not-found\n');
+    process.exit(2);
+  }
+  after = after.replace(sitesAvailabilityRe, `isAvailable:()=>!0/*${sitesPatchedMarker}*/`);
+  changed = true;
+}
+
+if (changed) {
+  fs.writeFileSync(file, after);
+  process.stdout.write('patched');
+} else {
   process.stdout.write('already-patched');
-  process.exit(0);
 }
-
-const originalRe = /async function ([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{if\(([A-Za-z_$][\w$]*)\.default\.platform===`darwin`\)\{await ([A-Za-z_$][\w$]*)\(`ditto`,\[`--noqtn`,\2,\3\]\);return\}await ([A-Za-z_$][\w$]*)\.default\.cp\(\2,\3,\{recursive:!0,verbatimSymlinks:!0\}\)\}/;
-const match = text.match(originalRe);
-if (!match) {
-  process.stderr.write('bundled-marketplace-copy-target-not-found\n');
-  process.exit(2);
-}
-
-const matchIndex = match.index ?? 0;
-const searchStart = Math.max(0, matchIndex - 2500);
-const searchEnd = Math.min(text.length, matchIndex + 2500);
-const nearby = text.slice(searchStart, searchEnd);
-const pathMatch = nearby.match(/\(0,([A-Za-z_$][\w$]*)\.join\)\(/) || text.match(/\(0,([A-Za-z_$][\w$]*)\.join\)\(/);
-if (!pathMatch) {
-  process.stderr.write('bundled-marketplace-copy-path-var-not-found\n');
-  process.exit(2);
-}
-
-const [, fn, sourceArg, targetArg, platformVar, dittoFn, fsVar] = match;
-const pathVar = pathMatch[1];
-const fallbackFn = `codexWindowsBundledMarketplaceCopyFallback`;
-const replacement = `async function ${fn}(${sourceArg},${targetArg}){if(${platformVar}.default.platform===\`darwin\`){await ${dittoFn}(\`ditto\`,[\`--noqtn\`,${sourceArg},${targetArg}]);return}try{await ${fsVar}.default.cp(${sourceArg},${targetArg},{recursive:!0,verbatimSymlinks:!0});return}catch(n){if(${platformVar}.default.platform!==\`win32\`)throw n;try{console.warn(\`${patchedMarker}\`,n)}catch{}}async function ${fallbackFn}(e,t){let n=await ${fsVar}.default.lstat(e);if(n.isDirectory()){await ${fsVar}.default.mkdir(t,{recursive:!0});for(let r of await ${fsVar}.default.readdir(e))await ${fallbackFn}((0,${pathVar}.join)(e,r),(0,${pathVar}.join)(t,r));return}if(n.isSymbolicLink()){let r=await ${fsVar}.default.readlink(e);try{await ${fsVar}.default.symlink(r,t)}catch(e){if(e?.code!==\`EEXIST\`)throw e}return}await ${fsVar}.default.mkdir((0,${pathVar}.dirname)(t),{recursive:!0});let r=await ${fsVar}.default.readFile(e);await ${fsVar}.default.writeFile(t,r);try{await ${fsVar}.default.chmod(t,n.mode)}catch{}}await ${fallbackFn}(${sourceArg},${targetArg})}`;
-
-fs.writeFileSync(file, text.replace(originalRe, replacement));
-process.stdout.write('patched');
 '@
 
   return [pscustomobject]@{

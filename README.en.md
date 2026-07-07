@@ -14,6 +14,7 @@ Use this skill when Windows Codex Desktop updates cause issues like these:
 - Repair the in-app browser, browser pane, Chrome, or browser_use when they are unavailable.
 - Repair Computer Use / computer control / Any App when it is unavailable.
 - Repair Computer Use errors such as `native pipe unavailable`, `missing-helper-path`, broken plugin cache, or broken helper paths.
+- Repair `openai-bundled` marketplace drift where the runtime marketplace drops `sites` or keeps uninstalling `sites@openai-bundled` after restart.
 - Repair native phone remote control under a third-party API login state when the entry is hidden, the QR code keeps spinning, setup redirects to ChatGPT login, Allow fails, or the phone says the Codex version is expired.
 - Repair Goal entries, settings entries, or feature buttons that disappear or become disabled after updates.
 - Repair Desktop new-chat/thread-start failures caused by `dynamicTools` schema drift, including `missing field inputSchema` when the CLI smoke path still works.
@@ -102,6 +103,7 @@ Use another agent, external PowerShell, the Codex extension inside VS Code/Antig
 - The UI language resets to English after restart.
 - Plugin entries, install buttons, Goal entries, or Computer Control `Any App` are greyed out or missing.
 - The in-app browser, browser pane, Chrome, or browser_use is hidden or disabled by Desktop-side gates.
+- The bundled runtime marketplace keeps dropping `sites`, or Desktop logs show `pluginNames` without `sites` plus `not_in_bundled_marketplace_plugin_names` for `sites@openai-bundled`.
 - Phone remote control is hidden, the QR keeps spinning, setup redirects to ChatGPT login, Allow fails, or the phone reports an expired Codex version.
 - Any repair that needs a full repatch, MSIX repack, Developer-signed package install, `app.asar` replacement, or `resources\codex.exe` replacement.
 
@@ -115,6 +117,8 @@ Expected verification after a full run:
 
 - The patch log includes `fast-mode UI patch result`, `locale i18n patch result`, and `browser-use gate patch result`, each as `patched` or `already-patched`.
 - Fast Mode wire verification captures `service_tier=priority` in Codex Desktop's `/v1/responses` request.
+- `codex plugin list` shows `sites`, `browser`, `chrome`, `computer-use`, and `latex` from `openai-bundled` as `installed, enabled` when bundled plugins are part of the repair.
+- Desktop logs show the bundled marketplace retaining `pluginNames=["sites","browser","chrome","computer-use","latex"]` and no new `not_in_bundled_marketplace_plugin_names` entry for `sites`.
 - Desktop logs show `browser_use_availability_resolved` with `available=true` and `reason=local-patched` when browser use is part of the repair.
 - If Chrome control is required, `codex plugin list` shows `chrome@openai-bundled` as `installed, enabled`, the native messaging host manifest points to existing files, and a smoke test can read a controlled tab title such as `Example Domain`.
 - If phone remote control is repaired, Connections shows the phone setup path, QR appears, phone scan does not report an expired Codex environment, native logs show remote-control WebSocket ping/pong/ack, and phone-created turns reach Desktop.

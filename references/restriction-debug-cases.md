@@ -114,9 +114,9 @@ Symptoms:
 
 Checks:
 
-- Run `codex plugin list` before package operations. If `chrome@openai-bundled`, `browser@openai-bundled`, or `computer-use@openai-bundled` are missing, disabled, or blocked by a marketplace snapshot error, treat that as local bundled marketplace evidence first.
+- Run `codex plugin list` before package operations. If `sites@openai-bundled`, `chrome@openai-bundled`, `browser@openai-bundled`, or `computer-use@openai-bundled` are missing, disabled, or blocked by a marketplace snapshot error, treat that as local bundled marketplace evidence first.
 - Run `scripts\install-computer-use-local.ps1 -StrictVerifyOnly` before package operations. A failure on a stale Chrome native messaging manifest, missing `latest` link, missing helper path, missing plugin file, or `@oai/sky` import/runtime path is local repair evidence.
-- Inspect `%USERPROFILE%\.codex\.tmp\bundled-marketplaces\openai-bundled\.agents\plugins\marketplace.json`.
+- Inspect `%USERPROFILE%\.codex\.tmp\bundled-marketplaces\openai-bundled\.agents\plugins\marketplace.json`; in current Windows builds it should retain `sites`, `browser`, `chrome`, `computer-use`, and `latex`.
 - Inspect `%USERPROFILE%\.codex\.tmp\bundled-marketplaces\openai-bundled\plugins\computer-use`.
 - Inspect running `extension-host` processes whose paths are under `%USERPROFILE%\.codex\plugins\cache\openai-bundled`.
 - Inspect `%USERPROFILE%\.codex\chrome-native-hosts.json`; remove stale entries whose `extensionHostPath` or `browserClientPath` points to a missing file.
@@ -129,7 +129,40 @@ Action:
 - Restart Codex Desktop.
 - Confirm the latest Desktop log ends with `computer-use native pipe startup ready`.
 - If `-StrictVerifyOnly` fails because `plugins\cache\openai-bundled\computer-use\latest\.codex-plugin\plugin.json` is missing, run `-VerifyOnly` once to rebuild the cached plugin and `latest` link, then rerun `-StrictVerifyOnly`.
+- If Desktop logs show `not_in_bundled_marketplace_plugin_names` uninstalling `sites@openai-bundled`, inspect whether bundled descriptor filtering dropped `sites` because `features.sites` is false. Use the targeted bundled marketplace copy patch; do not run the phone remote-control workflow or a broad MSIX repatch for this symptom alone.
 - Escalate to the MSIX workflow only if local repair succeeds but logs or extracted ASAR checks still show settings/UI availability gates are blocking Computer Use or browser_use, such as `browser_use_availability_resolved` with `reason=statsig-disabled` or Computer Use/Any App disabled by a Desktop gate.
+
+## Bundled Marketplace Drops Sites After Restart
+
+Symptoms:
+
+- `sites@openai-bundled` disappears or is disabled after Codex Desktop restarts.
+- Desktop logs show `not_in_bundled_marketplace_plugin_names` for `sites@openai-bundled`.
+- Desktop logs show bundled marketplace `pluginNames` without `sites`, commonly `["browser","chrome","computer-use","latex"]`, even though the package resources contain a `sites` plugin.
+- `browser`, `chrome`, or `computer-use` may still be present, so a Computer Use-only verification can pass while the bundled marketplace still keeps uninstalling `sites`.
+
+Checks:
+
+- Inspect newest Desktop logs for both the expected and broken plugin-name sets:
+
+```powershell
+$root = Join-Path $env:LOCALAPPDATA 'Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\Local\Codex\Logs'
+Get-ChildItem -LiteralPath $root -Recurse -File |
+  Sort-Object LastWriteTime -Descending |
+  Select-String -SimpleMatch -Pattern 'pluginNames=["sites","browser","chrome","computer-use","latex"]','pluginNames=["browser","chrome","computer-use","latex"]','not_in_bundled_marketplace_plugin_names' |
+  Select-Object -First 20
+```
+
+- Inspect the extracted main bundle or live ASAR for `isAvailable:({features:e})=>e.sites` near the bundled plugin descriptors. That shape means package resources can contain `sites`, but runtime filtering can still remove it when `features.sites` is false.
+- Confirm that the local mirror under `%USERPROFILE%\.codex\.tmp\bundled-marketplaces\openai-bundled` has five plugin directories after repair: `sites`, `browser`, `chrome`, `computer-use`, and `latex`.
+
+Action:
+
+- Use the targeted bundled marketplace patch with `-OnlyBundledMarketplaceCopy` and a non-system `-OutputRoot` when the user is avoiding C: drive pressure.
+- After install and relaunch, run `scripts\install-computer-use-local.ps1 -VerifyOnly` to rebuild the local mirror/cache, then `-StrictVerifyOnly`.
+- If `sites` was already uninstalled, reinstall it with `codex plugin add sites@openai-bundled` after the patch is live.
+- Verify recent logs show the five-plugin set and no new `not_in_bundled_marketplace_plugin_names` for `sites`.
+- Do not run Phone Remote Control scripts for this class. Do not run a full Fast/browser/Computer Use repatch unless separate logs show a closed Desktop gate such as `reason=statsig-disabled`.
 
 ## Computer Use Task Fails Before App Interaction
 
