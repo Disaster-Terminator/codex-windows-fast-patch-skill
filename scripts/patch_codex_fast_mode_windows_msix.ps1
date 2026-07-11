@@ -1013,15 +1013,15 @@ function patchSidebarAvailability(file) {
 function patchDesktopFeatureSender(file) {
   const before = read(file);
   const patchedSenderFragment = 'inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,browserPane:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0,computerUse:';
-  const patchedSenderPattern = /inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,(defaultLinkOpenTargetPreference:[^,}]+,)?(linksDefaultInAppBrowser:[^,}]+,)?(localBackend:[^,}]+,)?browserPane:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0,computerUse:/;
+  const patchedSenderPattern = /inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,(defaultLinkOpenTargetPreference:[^,}]+,)?(linksDefaultInAppBrowser:[^,}]+,)?(localBackend:[^,}]+,)?browserPane:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0,(findShortcuts:[^,}]+,)?computerUse:/;
   if (!before.includes('browser_use_availability_resolved') || !before.includes('electron-desktop-features-changed')) {
     process.stderr.write('browser-use-desktop-feature-sender-target-not-found\n');
     process.exit(2);
   }
 
   let after = before.replace(
-    /inAppBrowserUse:[^,}]+,inAppBrowserUseAllowed:[^,}]+,(defaultLinkOpenTargetPreference:[^,}]+,)?(linksDefaultInAppBrowser:[^,}]+,)?(localBackend:[^,}]+,)?browserPane:[^,}]+,externalBrowserUse:[^,}]+,externalBrowserUseAllowed:[^,}]+,computerUse:/,
-    'inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,$1$2$3browserPane:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0,computerUse:'
+    /inAppBrowserUse:[^,}]+,inAppBrowserUseAllowed:[^,}]+,(defaultLinkOpenTargetPreference:[^,}]+,)?(linksDefaultInAppBrowser:[^,}]+,)?(localBackend:[^,}]+,)?browserPane:[^,}]+,externalBrowserUse:[^,}]+,externalBrowserUseAllowed:[^,}]+,(findShortcuts:[^,}]+,)?computerUse:/,
+    'inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,$1$2$3browserPane:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0,$4computerUse:'
   );
   after = after.replace(
     /browser_use_availability_resolved`,\{safe:\{available:[^,]+,platform:([^,]+),reason:[^,]+,release:([^}]+)\},sensitive:\{browserPane:[^}]+\}\}\)/,
@@ -1229,7 +1229,7 @@ function Find-PatchTargets {
   foreach ($candidate in $desktopFeatureSenderCandidates) {
     $text = Get-Content -Raw -LiteralPath $candidate
     if ($text.Contains('electron-desktop-features-changed') -and
-        (($text -match 'inAppBrowserUse:[^,}]+,inAppBrowserUseAllowed:[^,}]+,(defaultLinkOpenTargetPreference:[^,}]+,)?(linksDefaultInAppBrowser:[^,}]+,)?(localBackend:[^,}]+,)?browserPane:[^,}]+,externalBrowserUse:[^,}]+,externalBrowserUseAllowed:[^,}]+,computerUse:[^,}]+') -or
+        (($text -match 'inAppBrowserUse:[^,}]+,inAppBrowserUseAllowed:[^,}]+,(defaultLinkOpenTargetPreference:[^,}]+,)?(linksDefaultInAppBrowser:[^,}]+,)?(localBackend:[^,}]+,)?browserPane:[^,}]+,externalBrowserUse:[^,}]+,externalBrowserUseAllowed:[^,}]+,(findShortcuts:[^,}]+,)?computerUse:[^,}]+') -or
          ($text -match 'inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,(defaultLinkOpenTargetPreference:[^,}]+,)?(linksDefaultInAppBrowser:[^,}]+,)?(localBackend:[^,}]+,)?browserPane:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0'))) {
       $desktopFeatureSenderTarget = $candidate
       break
