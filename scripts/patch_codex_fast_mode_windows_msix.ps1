@@ -12,8 +12,10 @@ param(
   [switch]$AddLocalPluginMarketplace,
   [string]$LocalPluginMarketplaceSource = (Join-Path $env:USERPROFILE '.codex\.tmp\plugins'),
   [string]$LocalPluginMarketplaceName = 'openai-curated-local',
+  [string[]]$CustomModels = @('gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'),
   [switch]$VerifyFastModeRequest,
   [switch]$OnlyBundledMarketplaceCopy,
+  [switch]$OnlyCustomModels,
   [switch]$DryRun
 )
 
@@ -489,6 +491,7 @@ function Write-PatcherFiles {
 
   $fastPatcherPath = Join-Path $WorkDir 'PatchFastMode.cjs'
   $fastUiPatcherPath = Join-Path $WorkDir 'PatchFastModeUi.cjs'
+  $customModelsPatcherPath = Join-Path $WorkDir 'PatchCustomModels.cjs'
   $localePatcherPath = Join-Path $WorkDir 'PatchLocaleI18n.cjs'
   $pluginsPatcherPath = Join-Path $WorkDir 'PatchPlugins.cjs'
   $goalPatcherPath = Join-Path $WorkDir 'PatchGoal.cjs'
@@ -562,6 +565,12 @@ const fs = require('node:fs');
 const file = process.argv[2];
 const text = fs.readFileSync(file, 'utf8');
 
+const constantPatchedRe = /let\{data:\w+,isPending:\w+\}=[^;]+,(\w+)=!1,(\w+)=!0,\w+;[\s\S]*?\{isServiceTierAllowed:\2,isLoading:\1\}/;
+if (constantPatchedRe.test(text)) {
+  process.stdout.write('already-patched');
+  process.exit(0);
+}
+
 const patchedRe = /let\{data:\w+,isPending:(\w+)\}=[A-Za-z_$][\w$]*\([^)]+\),(\w+)=!!\w+\?\.isLoading\|\|\1,(\w+)=!\2&&\w+!=null&&\w+\?\.requirements\?\.featureRequirements\?\.fast_mode!==!1/;
 if (patchedRe.test(text)) {
   process.stdout.write('already-patched');
@@ -578,6 +587,40 @@ if (!match) {
 const [, dataVar, pendingVar, queryCall, loadingVar, authStateVar, chatgptOnlyVar, allowedVar] = match;
 const replacement = `let{data:${dataVar},isPending:${pendingVar}}=${queryCall},${loadingVar}=!!${authStateVar}?.isLoading||${pendingVar},${allowedVar}=!${loadingVar}&&${dataVar}!=null&&${dataVar}?.requirements?.featureRequirements?.fast_mode!==!1`;
 fs.writeFileSync(file, text.replace(uiGateRe, replacement));
+process.stdout.write('patched');
+'@
+
+  Set-Content -LiteralPath $customModelsPatcherPath -Encoding UTF8 -Value @'
+const fs = require('node:fs');
+const file = process.argv[2];
+const models = [...new Set(process.argv.slice(3).filter(Boolean))];
+if (models.length === 0) {
+  process.stderr.write('custom-model-list-empty\n');
+  process.exit(2);
+}
+
+const marker = 'CODEX_CUSTOM_MODELS_V1';
+const text = fs.readFileSync(file, 'utf8');
+if (text.includes(marker) && models.every((model) => text.includes(model))) {
+  process.stdout.write('already-patched');
+  process.exit(0);
+}
+
+const visibilityRe = /if\(([$A-Za-z_][$\w]*)\?([$A-Za-z_][$\w]*)\.has\(([$A-Za-z_][$\w]*)\.model\):!\3\.hidden\)\{/;
+const match = text.match(visibilityRe);
+if (!match) {
+  process.stderr.write('custom-model-visibility-target-not-found\n');
+  process.exit(2);
+}
+
+const forced = JSON.stringify(models);
+const replacement = `if(/*${marker}*/${forced}.includes(${match[3]}.model)||(${match[1]}?${match[2]}.has(${match[3]}.model):!${match[3]}.hidden)){`;
+const next = text.replace(visibilityRe, replacement);
+if (!next.includes(marker) || !models.every((model) => next.includes(model))) {
+  process.stderr.write('custom-model-patch-verification-failed\n');
+  process.exit(2);
+}
+fs.writeFileSync(file, next);
 process.stdout.write('patched');
 '@
 
@@ -1086,6 +1129,7 @@ if (changed) {
   return [pscustomobject]@{
     Fast = $fastPatcherPath
     FastUi = $fastUiPatcherPath
+    CustomModels = $customModelsPatcherPath
     LocaleI18n = $localePatcherPath
     Plugins = $pluginsPatcherPath
     Goal = $goalPatcherPath
@@ -1126,10 +1170,24 @@ function Find-PatchTargets {
   $fastModeUiTarget = $null
   foreach ($candidate in (Get-ChildItem -LiteralPath $assetsDir -Filter 'use-service-tier-settings-*.js' -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)) {
     $text = Get-Content -Raw -LiteralPath $candidate
-    if ($text.Contains('isServiceTierAllowed') -and $text.Contains('featureRequirements?.fast_mode')) {
+    if ($text.Contains('isServiceTierAllowed') -and
+        ($text.Contains('featureRequirements?.fast_mode') -or
+         $text -match 'let\{data:\w+,isPending:\w+\}=[^;]+,\w+=!1,\w+=!0,\w+;')) {
       $fastModeUiTarget = $candidate
       break
     }
+  }
+  $customModelsTarget = $null
+  foreach ($candidate in (Get-ChildItem -LiteralPath $assetsDir -Filter 'model-list-filter-*.js' -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)) {
+    $text = Get-Content -Raw -LiteralPath $candidate
+    if (($text.Contains('useHiddenModels') -or $text -match '\?\w+\.has\(\w+\.model\):!\w+\.hidden') -and
+        $text.Contains('supportedReasoningEfforts')) {
+      $customModelsTarget = $candidate
+      break
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($customModelsTarget)) {
+    Fail 'could not find custom model visibility filter in extracted assets'
   }
   $localeI18nTarget = $null
   $localeCandidates = @(
@@ -1364,6 +1422,7 @@ function Find-PatchTargets {
 
   Write-Log "fast-mode patch target: $fastModeTarget"
   Write-Log "fast-mode UI patch target: $fastModeUiTarget"
+  Write-Log "custom models patch target: $customModelsTarget"
   Write-Log "locale i18n patch target: $localeI18nTarget"
   Write-Log "plugin sidebar patch target: $pluginSidebarTarget"
   Write-Log "plugin skills-page patch target: $pluginSkillsTarget"
@@ -1383,6 +1442,7 @@ function Find-PatchTargets {
   return [pscustomobject]@{
     FastMode = $fastModeTarget
     FastModeUi = $fastModeUiTarget
+    CustomModels = $customModelsTarget
     LocaleI18n = $localeI18nTarget
     PluginSidebar = $pluginSidebarTarget
     PluginSkills = $pluginSkillsTarget
@@ -1439,6 +1499,43 @@ function Invoke-PatchAppAsar {
   Invoke-NpxAsar 'extract' $asarPath $extractDir
   $patchers = Write-PatcherFiles $WorkDir
 
+  if ($OnlyCustomModels) {
+    $assetsDir = Join-Path $extractDir 'webview\assets'
+    $customModelsTarget = $null
+    foreach ($candidate in (Get-ChildItem -LiteralPath $assetsDir -Filter 'model-list-filter-*.js' -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)) {
+      $text = Get-Content -Raw -LiteralPath $candidate
+      if (($text.Contains('useHiddenModels') -or $text -match '\?\w+\.has\(\w+\.model\):!\w+\.hidden') -and
+          $text.Contains('supportedReasoningEfforts')) {
+        $customModelsTarget = $candidate
+        break
+      }
+    }
+    if ([string]::IsNullOrWhiteSpace($customModelsTarget)) {
+      Fail 'could not find custom model visibility filter in extracted assets'
+    }
+    Write-Log "custom models patch target: $customModelsTarget"
+    $customModelsResult = Invoke-NodePatcher $nodePath $patchers.CustomModels (@($customModelsTarget) + @($CustomModels))
+    Write-Log "custom models patch result: $customModelsResult ($($CustomModels -join ', '))"
+    & $nodePath --check $customModelsTarget
+    if ($LASTEXITCODE -ne 0) {
+      Fail 'custom models patched asset failed node --check'
+    }
+    Write-Log 'custom models patched asset syntax check passed'
+
+    if ($DryRun) {
+      Write-Log 'dry run: custom models patch target validation completed; no package was changed'
+      return $false
+    }
+    if ($customModelsResult -eq 'already-patched') {
+      Write-Log 'asar custom models patch already present'
+      return $false
+    }
+    Write-Log 'repacking app.asar'
+    Invoke-NpxAsar 'pack' $extractDir $newAsarPath
+    Copy-Item -LiteralPath $newAsarPath -Destination $asarPath -Force
+    return $true
+  }
+
   if ($OnlyBundledMarketplaceCopy) {
     $viteBuildDir = Join-Path $extractDir '.vite\build'
     if (-not (Test-Path -LiteralPath $viteBuildDir -PathType Container)) {
@@ -1481,6 +1578,8 @@ function Invoke-PatchAppAsar {
   Write-Log "fast-mode patch result: $fast"
   $fastUi = Invoke-NodePatcher $nodePath $patchers.FastUi @($targets.FastModeUi)
   Write-Log "fast-mode UI patch result: $fastUi"
+  $customModels = Invoke-NodePatcher $nodePath $patchers.CustomModels (@($targets.CustomModels) + @($CustomModels))
+  Write-Log "custom models patch result: $customModels ($($CustomModels -join ', '))"
 
   $localeI18n = Invoke-NodePatcher $nodePath $patchers.LocaleI18n @($targets.LocaleI18n)
   Write-Log "locale i18n patch result: $localeI18n"
@@ -1517,6 +1616,7 @@ function Invoke-PatchAppAsar {
 
   if ($fast -eq 'already-patched' -and
       $fastUi -eq 'already-patched' -and
+      $customModels -eq 'already-patched' -and
       $localeI18n -eq 'already-patched' -and
       $plugins -eq 'already-patched' -and
       $goal -eq 'already-patched' -and
@@ -1710,9 +1810,9 @@ function Install-PatchedPackage {
   $installed = Get-AppxPackage -Name 'OpenAI.Codex' -ErrorAction Stop | Select-Object -First 1
   Write-Log "installed package: $($installed.PackageFullName)"
   if ($Launch -and -not $NoLaunch) {
-    $exe = Join-Path $installed.InstallLocation 'app\Codex.exe'
-    Write-Log "launching Codex: $exe"
-    Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe)
+    $appUserModelId = "$($installed.PackageFamilyName)!App"
+    Write-Log "launching Codex package app: $appUserModelId"
+    Start-Process -FilePath 'explorer.exe' -ArgumentList "shell:AppsFolder\$appUserModelId"
   }
 }
 

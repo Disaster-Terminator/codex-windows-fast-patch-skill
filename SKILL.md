@@ -133,6 +133,7 @@ The wrapper calls the bundled patch script at `scripts\patch_codex_fast_mode_win
 It also verifies and writes the local marketplace config at `$env:USERPROFILE\.codex\marketplaces\openai-curated-local`, including `source_type = "local"` and the exact `source` path.
 It also syncs the installed `openai-bundled` marketplace from the current Codex package into `$env:USERPROFILE\.codex\.tmp\bundled-marketplaces\openai-bundled`, overlays a local `computer-use@openai-bundled` compatibility plugin, writes that local marketplace into config, repairs stable `browser` / `chrome` plugin cache copies so their `latest` junctions do not point at the mutable `.tmp` marketplace mirror, and enables `CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE=1` for the current user so the Desktop app can expose Windows Computer Use after restart.
 It patches Fast Mode in both the request path and the settings UI path. The request patch removes the ChatGPT-only branch while still reading host/model feature requirements; the UI patch removes the matching ChatGPT-only availability check in service-tier settings.
+It also forces the configured custom model IDs through the Desktop model visibility filter. By default these are `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`. On builds containing the compact Power slider, exposing the matching GPT-5.6 model and reasoning combinations also enables that slider instead of the legacy model/effort/speed-only menu.
 It patches the locale i18n gate that can force the Desktop UI back to English after restart when `enable_i18n` is disabled in the shipped webview bundle.
 It patches Chrome/browser_use gates in both the webview assets and the main Electron feature sender/receiver path, covering in-app browser, browser pane, and external browser availability. This only unlocks the local Desktop gates; Chrome extension and native messaging files still need to exist and should be verified separately.
 It also patches the Desktop webview gates that otherwise hide or disable Windows Computer Use behind the `computer_use` experimental feature and Statsig gate `1506311413`, and it writes `features.computer_use = true` into `$env:USERPROFILE\.codex\config.toml` without replacing the rest of the `[features]` table.
@@ -363,9 +364,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\ski
 - `-DryRun`: verify bundle targets only; no install.
 - `-NoLaunch`: install but do not start Codex Desktop.
 - `-SkipFastVerify`: skip the WebSocket `service_tier` capture.
+- `-CustomModels <id1,id2,...>`: custom model IDs forced through the Desktop model visibility filter; defaults to `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`.
 - `-KeepBuild`: keep `Downloads\codex-msix-repack` for debugging.
 - `-OutputRoot <path>`: optional large local build root; use it when the default output root is short on space, points at a broken junction, or should be kept off the system drive.
 - `-OnlyBundledMarketplaceCopy`: patch only the Desktop bundled marketplace copy/helper availability path so Windows falls back to byte-stream copying when `fs.cp()` cannot copy bundled plugin files from WindowsApps-protected package paths, and so `sites` remains locally available when bundled availability filtering would otherwise remove it. Use this for restart-time bundled marketplace sync failures that uninstall `sites`, `browser`, or `chrome`, not for general Fast Mode or UI gates.
+- `-OnlyCustomModels`: patch only the Desktop model visibility filter for `-CustomModels`. Use this low-disruption path when the current Developer-signed package already contains the other required patches and only custom model visibility or the dependent compact Power slider is missing.
 - `-SkipSdkCleanup`: leave Windows SDK installed.
 - `-RegisterMarketplaceOnly`: only register `openai-curated-local`; do not patch Codex.
 - `-PatchScript <path>`: override the bundled patch script only when testing a newer patcher.
@@ -463,9 +466,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\ski
 
 - If an existing `config.toml` was modified, the log shows a timestamped backup under `.codex\backups\config\`.
 - `Get-AppxPackage -Name OpenAI.Codex` shows `SignatureKind = Developer`.
+- The install log launches the patched Desktop package through its AppUserModelId, avoiding direct-executable access failures under `WindowsApps`.
 - Codex Desktop processes stay alive from `...\WindowsApps\OpenAI.Codex_<version>...\app\Codex.exe`.
 - Fast Mode verification logs `request wire service_tier=priority`.
 - The patch log includes `fast-mode UI patch result` and `locale i18n patch result`, each either `patched` or `already-patched`.
+- The patch log includes `custom models patch result`, and the patched model filter contains all configured custom model IDs.
 - The patch log includes `browser-use gate patch result`, either `patched` or `already-patched`.
 - Desktop logs show `browser_use_availability_resolved` with `available=true` and `reason=local-patched` after the patched app starts.
 - `$env:USERPROFILE\.codex\config.toml` contains `[marketplaces.openai-curated-local]`.
