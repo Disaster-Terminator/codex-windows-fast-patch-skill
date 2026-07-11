@@ -1,24 +1,35 @@
 # Restriction Debug Cases
 
-Use this reference only when the main `SKILL.md` workflow does not explain the current Codex Desktop restriction, plugin gate, Computer Use failure, browser_use failure, or Fast Mode failure. Keep the investigation evidence-based: prefer package status, config, plugin list output, Desktop logs, sandbox logs, and captured network requests over assumptions.
+Use this reference only when the main `SKILL.md` workflow does not explain the current Codex Desktop restriction, plugin gate, Computer Use failure, browser_use failure, or Model Experience failure. Model Experience covers Fast Mode request/UI behavior, custom models hidden by the Desktop model filter, and the dependent compact Power slider. Keep the investigation evidence-based: prefer package status, config, plugin list output, Desktop logs, sandbox logs, and captured network requests over assumptions.
 
-## Fast Mode Is Visible But Not Actually Fast
+## Model Experience Is Partially Broken
 
 Symptoms:
 
 - The UI exposes Fast Mode, but requests do not receive priority behavior.
 - A local smoke test returns an answer such as `FAST_CHECK_OK`.
+- CLI or `/v1/models` exposes a model, but the Desktop picker still hides it.
+- The compact blue-purple Power slider falls back to the legacy Model / Reasoning / Speed picker because the required Sol/Terra model and reasoning combinations were filtered out.
 
 Checks:
 
 - Capture the actual `/v1/responses` request made by Codex Desktop and verify `service_tier=priority` on the wire.
 - If the upstream is CPA or another proxy, inspect the proxy-side override rules. Local capture only proves Codex sent the parameter; the proxy can still drop, rewrite, or ignore it.
 - In newer Codex builds, inspect `webview\assets\read-service-tier-for-request-*.js`. A shape like `return authMethod===\`chatgpt\` ? featureRequirements?.fast_mode !== false : false` means API-key/local requests are still forced out of Fast Mode.
+- Inspect `webview\assets\use-service-tier-settings-*.js` independently; Fast request wiring can be correct while the UI gate remains closed, or the UI can be open while request wiring is still wrong.
+- Inspect `webview\assets\model-list-filter-*.js` for Statsig-driven `available_models` filtering. Provider discovery can succeed while the frontend still removes the model before the Power slider calculates its available combinations.
 
 Action:
 
 - For CPA, add an override rule for the Codex-facing model names and force `service_tier` as a string value of `priority`.
 - Patch the Fast Mode gate by removing the `chatgpt`-only branch while preserving the feature-requirement lookup, then rerun wire capture.
+- Run the unified Model Experience dry run so the request gate, UI gate, and model filter are checked separately and only broken components are changed:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\skills\codex-windows-fast-patch\scripts\patch_codex_fast_mode_windows_msix.ps1" -OnlyModelExperience -DryRun -OutputRoot "<large-local-build-root>"
+```
+
+- If the dry run reports any `patched` result, install the same targeted workflow from an external executor. If all three results are `already-patched`, do not rebuild the package; continue with provider/proxy and model-cache diagnosis.
 - Treat proxy configuration as part of Fast Mode validation, not as optional documentation.
 
 ## UI Gate Is Still Blocking A Feature

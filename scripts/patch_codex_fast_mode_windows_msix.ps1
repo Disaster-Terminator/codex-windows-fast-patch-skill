@@ -15,7 +15,8 @@ param(
   [string[]]$CustomModels = @('gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'),
   [switch]$VerifyFastModeRequest,
   [switch]$OnlyBundledMarketplaceCopy,
-  [switch]$OnlyCustomModels,
+  [Alias('OnlyCustomModels')]
+  [switch]$OnlyModelExperience,
   [switch]$DryRun
 )
 
@@ -507,12 +508,13 @@ const text = fs.readFileSync(file, 'utf8');
 const legacyPatchedRe = /function L\(e\)\{let (\w+)=v\(x\),(\w+)=e\?\.hostId\?\?\1,\{data:(\w+)\}=d\(E,\2\);return \3\?\.requirements\?\.featureRequirements\?\.fast_mode!==!1\}/;
 const currentDirectPatchedRe = /featureRequirements\?\.fast_mode===!1;return!\w+\}/;
 const currentAsyncPatchedRe = /async function \w+\(\w+,\w+\)\{let \w+=await \w+\(\w+,\w+\);return\(await \w+\.query\.fetch\(\w+,\{authMethod:\w+,hostId:\w+\}\)\)\.requirements\?\.featureRequirements\?\.fast_mode!==!1\}/;
+const currentCachedAsyncPatchedRe = /return [^;]+\.query\.setData\([\s\S]*?\),\w+\.requirements\?\.featureRequirements\?\.fast_mode!==!1\}/;
 const legacyOriginalRe = /function L\(e\)\{let (\w+)=v\(x\),(\w+)=e\?\.hostId\?\?\1,(\w+)=O\(\2\),\{data:(\w+)\}=d\(E,\2\);return!\(\3\?\.authMethod!==`chatgpt`\|\|\4\?\.requirements\?\.featureRequirements\?\.fast_mode===!1\)\}/;
 const currentDirectOriginalRe = /function (\w+)\(e\)\{let (\w+)=([^,;]+),(\w+)=e\?\.hostId\?\?\2,(\w+)=(\w+\(\4\)),\{data:(\w+)\}=(\w+\(\w+,\4\)),(\w+)=\7\?\.requirements\?\.featureRequirements\?\.fast_mode===!1;return!\(\5\?\.authMethod!==`chatgpt`\|\|\9\)\}/;
 const currentAsyncOriginalRe = /async function (\w+)\((\w+),(\w+)\)\{let (\w+)=await ([A-Za-z_$][\w$]*)\(\2,\3\);return \4===`chatgpt`\?\(await \2\.query\.fetch\(([A-Za-z_$][\w$]*),\{authMethod:\4,hostId:\3\}\)\)\.requirements\?\.featureRequirements\?\.fast_mode!==!1:!1\}/;
 const currentSplitConditionRe = /if\((\w+)\?\.authMethod!==`chatgpt`\|\|(\w+)\)\{/;
 
-if (legacyPatchedRe.test(text) || currentAsyncPatchedRe.test(text) || (currentDirectPatchedRe.test(text) && !legacyOriginalRe.test(text) && !currentDirectOriginalRe.test(text) && !currentSplitConditionRe.test(text))) {
+if (legacyPatchedRe.test(text) || currentAsyncPatchedRe.test(text) || currentCachedAsyncPatchedRe.test(text) || (currentDirectPatchedRe.test(text) && !legacyOriginalRe.test(text) && !currentDirectOriginalRe.test(text) && !currentSplitConditionRe.test(text))) {
   process.stdout.write('already-patched');
   process.exit(0);
 }
@@ -1499,8 +1501,43 @@ function Invoke-PatchAppAsar {
   Invoke-NpxAsar 'extract' $asarPath $extractDir
   $patchers = Write-PatcherFiles $WorkDir
 
-  if ($OnlyCustomModels) {
+  if ($OnlyModelExperience) {
     $assetsDir = Join-Path $extractDir 'webview\assets'
+    $fastModeTarget = $null
+    foreach ($candidate in (Get-ChildItem -LiteralPath $assetsDir -Filter 'read-service-tier-for-request-*.js' -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)) {
+      $text = Get-Content -Raw -LiteralPath $candidate
+      if ($text.Contains('featureRequirements?.fast_mode')) {
+        $fastModeTarget = $candidate
+        break
+      }
+    }
+    if ([string]::IsNullOrWhiteSpace($fastModeTarget)) {
+      foreach ($candidate in (Invoke-RgList $rgPath 'Failed to read service tier for request' $assetsDir)) {
+        $text = Get-Content -Raw -LiteralPath $candidate
+        if ($text.Contains('featureRequirements?.fast_mode')) {
+          $fastModeTarget = $candidate
+          break
+        }
+      }
+    }
+    if ([string]::IsNullOrWhiteSpace($fastModeTarget)) {
+      Fail 'could not find Model Experience Fast Mode request target'
+    }
+
+    $fastModeUiTarget = $null
+    foreach ($candidate in (Get-ChildItem -LiteralPath $assetsDir -Filter 'use-service-tier-settings-*.js' -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)) {
+      $text = Get-Content -Raw -LiteralPath $candidate
+      if ($text.Contains('isServiceTierAllowed') -and
+          ($text.Contains('featureRequirements?.fast_mode') -or
+           $text -match 'let\{data:\w+,isPending:\w+\}=[^;]+,\w+=!1,\w+=!0,\w+;')) {
+        $fastModeUiTarget = $candidate
+        break
+      }
+    }
+    if ([string]::IsNullOrWhiteSpace($fastModeUiTarget)) {
+      Fail 'could not find Model Experience Fast Mode UI target'
+    }
+
     $customModelsTarget = $null
     foreach ($candidate in (Get-ChildItem -LiteralPath $assetsDir -Filter 'model-list-filter-*.js' -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)) {
       $text = Get-Content -Raw -LiteralPath $candidate
@@ -1513,21 +1550,31 @@ function Invoke-PatchAppAsar {
     if ([string]::IsNullOrWhiteSpace($customModelsTarget)) {
       Fail 'could not find custom model visibility filter in extracted assets'
     }
-    Write-Log "custom models patch target: $customModelsTarget"
+    Write-Log "Model Experience Fast Mode request target: $fastModeTarget"
+    Write-Log "Model Experience Fast Mode UI target: $fastModeUiTarget"
+    Write-Log "Model Experience custom models target: $customModelsTarget"
+    $fastModeResult = Invoke-NodePatcher $nodePath $patchers.Fast @($fastModeTarget)
+    Write-Log "Model Experience Fast Mode request result: $fastModeResult"
+    $fastModeUiResult = Invoke-NodePatcher $nodePath $patchers.FastUi @($fastModeUiTarget)
+    Write-Log "Model Experience Fast Mode UI result: $fastModeUiResult"
     $customModelsResult = Invoke-NodePatcher $nodePath $patchers.CustomModels (@($customModelsTarget) + @($CustomModels))
-    Write-Log "custom models patch result: $customModelsResult ($($CustomModels -join ', '))"
-    & $nodePath --check $customModelsTarget
-    if ($LASTEXITCODE -ne 0) {
-      Fail 'custom models patched asset failed node --check'
+    Write-Log "Model Experience custom models result: $customModelsResult ($($CustomModels -join ', '))"
+    foreach ($syntaxTarget in @($fastModeTarget, $fastModeUiTarget, $customModelsTarget)) {
+      & $nodePath --check $syntaxTarget
+      if ($LASTEXITCODE -ne 0) {
+        Fail "Model Experience patched asset failed node --check: $syntaxTarget"
+      }
     }
-    Write-Log 'custom models patched asset syntax check passed'
+    Write-Log 'Model Experience patched asset syntax checks passed'
 
     if ($DryRun) {
-      Write-Log 'dry run: custom models patch target validation completed; no package was changed'
+      Write-Log 'dry run: Model Experience target validation completed; no package was changed'
       return $false
     }
-    if ($customModelsResult -eq 'already-patched') {
-      Write-Log 'asar custom models patch already present'
+    if ($fastModeResult -eq 'already-patched' -and
+        $fastModeUiResult -eq 'already-patched' -and
+        $customModelsResult -eq 'already-patched') {
+      Write-Log 'asar Model Experience patches already present'
       return $false
     }
     Write-Log 'repacking app.asar'
