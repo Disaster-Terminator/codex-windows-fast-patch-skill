@@ -1,8 +1,8 @@
 diff --git a/codex-rs/app-server-transport/src/transport/remote_control/auth.rs b/codex-rs/app-server-transport/src/transport/remote_control/auth.rs
-index ec4eb81..fd9e396 100644
+index dbd2310..ce6dd47 100644
 --- a/codex-rs/app-server-transport/src/transport/remote_control/auth.rs
 +++ b/codex-rs/app-server-transport/src/transport/remote_control/auth.rs
-@@ -3,8 +3,14 @@ use axum::http::HeaderValue;
+@@ -1,8 +1,14 @@
  use codex_api::SharedAuthProvider;
  use codex_login::AuthManager;
  use codex_login::UnauthorizedRecovery;
@@ -17,7 +17,7 @@ index ec4eb81..fd9e396 100644
  use std::sync::Arc;
  use tokio::sync::watch;
  use tracing::info;
-@@ -17,6 +23,12 @@ pub(super) struct RemoteControlConnectionAuth {
+@@ -13,6 +19,12 @@ pub(super) struct RemoteControlConnectionAuth {
      pub(super) account_id: String,
  }
  
@@ -27,10 +27,10 @@ index ec4eb81..fd9e396 100644
 +    source: PathBuf,
 +}
 +
- impl RemoteControlConnectionAuth {
-     pub(super) fn request_headers(&self) -> io::Result<HeaderMap> {
-         let mut headers = HeaderMap::new();
-@@ -62,6 +74,18 @@ pub(super) async fn load_remote_control_auth(
+ pub(super) async fn load_remote_control_auth(
+     auth_manager: &Arc<AuthManager>,
+ ) -> io::Result<RemoteControlConnectionAuth> {
+@@ -41,6 +53,18 @@ pub(super) async fn load_remote_control_auth(
      };
  
      if !auth.uses_codex_backend() {
@@ -49,7 +49,7 @@ index ec4eb81..fd9e396 100644
          return Err(io::Error::new(
              ErrorKind::PermissionDenied,
              "remote control requires ChatGPT authentication; API key auth is not supported",
-@@ -79,6 +103,154 @@ pub(super) async fn load_remote_control_auth(
+@@ -58,6 +82,154 @@ pub(super) async fn load_remote_control_auth(
      })
  }
  
@@ -205,7 +205,7 @@ index ec4eb81..fd9e396 100644
      auth_recovery: &mut UnauthorizedRecovery,
      auth_change_rx: &mut watch::Receiver<u64>,
 diff --git a/codex-rs/app-server-transport/src/transport/remote_control/websocket.rs b/codex-rs/app-server-transport/src/transport/remote_control/websocket.rs
-index 7434454..b345595 100644
+index b9f1c71..624f0a9 100644
 --- a/codex-rs/app-server-transport/src/transport/remote_control/websocket.rs
 +++ b/codex-rs/app-server-transport/src/transport/remote_control/websocket.rs
 @@ -44,8 +44,10 @@ use futures::stream::SplitSink;
@@ -340,10 +340,10 @@ index 7434454..b345595 100644
              match &err {
                  tungstenite::Error::Http(response)
 diff --git a/codex-rs/login/src/auth/manager.rs b/codex-rs/login/src/auth/manager.rs
-index 8444108..685ce9b 100644
+index 26580a6..19bd0b9 100644
 --- a/codex-rs/login/src/auth/manager.rs
 +++ b/codex-rs/login/src/auth/manager.rs
-@@ -1859,6 +1859,11 @@ fn default_agent_identity_authapi_base_url() -> Option<String> {
+@@ -1798,6 +1798,11 @@ fn default_agent_identity_authapi_base_url() -> Option<String> {
  }
  
  impl AuthManager {
@@ -355,3 +355,4 @@ index 8444108..685ce9b 100644
      /// Create a new manager loading the initial auth using the provided
      /// preferred auth method. Errors loading auth are swallowed; `auth()` will
      /// simply return `None` in that case so callers can treat it as an
+warning: in the working copy of 'codex-rs/app-server-transport/src/transport/remote_control/auth.rs', LF will be replaced by CRLF the next time Git touches it

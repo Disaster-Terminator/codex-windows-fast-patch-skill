@@ -11,6 +11,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$OutputRoot = [System.IO.Path]::GetFullPath($OutputRoot)
+$script:OperationTempRoot = Join-Path $OutputRoot '.remote-control-temp'
+$script:SdkBuildToolsCacheRoot = Join-Path $script:OperationTempRoot 'sdk-buildtools'
 
 function Write-Log {
   param([string]$Message)
@@ -20,6 +23,36 @@ function Write-Log {
 function Fail {
   param([string]$Message)
   throw $Message
+}
+
+function Start-InstalledAppxPackage {
+  param(
+    [Parameter(Mandatory = $true)]$Package
+  )
+  $manifest = Get-AppxPackageManifest -Package $Package -ErrorAction Stop
+  $applications = @($manifest.Package.Applications.Application)
+  if ($applications.Count -lt 1) {
+    Fail "installed package has no application entry: $($Package.PackageFullName)"
+  }
+  $application = $applications[0]
+  if ($applications.Count -gt 1) {
+    $appEntries = @($applications | Where-Object { [string]$_.Id -eq 'App' })
+    if ($appEntries.Count -ne 1) {
+      $applicationIds = @($applications | ForEach-Object { [string]$_.Id }) -join ', '
+      Fail "installed package has ambiguous application entries ($applicationIds): $($Package.PackageFullName)"
+    }
+    $application = $appEntries[0]
+  }
+  $packageFamilyName = [string]$Package.PackageFamilyName
+  $applicationId = [string]$application.Id
+  if ([string]::IsNullOrWhiteSpace($packageFamilyName) -or [string]::IsNullOrWhiteSpace($applicationId)) {
+    Fail "installed package is missing PackageFamilyName or Application Id: $($Package.PackageFullName)"
+  }
+  $aumid = "$packageFamilyName!$applicationId"
+  $explorer = Get-RequiredCommand 'explorer.exe'
+  Write-Log "launching Codex through AppUserModelId: $aumid"
+  Start-Process -FilePath $explorer -ArgumentList "shell:AppsFolder\$aumid" -WindowStyle Hidden -ErrorAction Stop | Out-Null
+  return $aumid
 }
 
 function Remove-DirectoryRobust {
@@ -53,7 +86,8 @@ if (target === root || !target.toLowerCase().startsWith(root.toLowerCase() + pat
 }
 fs.rmSync(target, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
 '@
-    $tempScript = Join-Path $env:TEMP ('codex-remove-tree-' + [guid]::NewGuid().ToString() + '.js')
+    New-Item -ItemType Directory -Force -Path $script:OperationTempRoot | Out-Null
+    $tempScript = Join-Path $script:OperationTempRoot ('codex-remove-tree-' + [guid]::NewGuid().ToString() + '.js')
     Set-Content -LiteralPath $tempScript -Value $script -Encoding UTF8
     try {
       & $node.Source $tempScript $resolved $root
@@ -97,7 +131,8 @@ if (missing.length > 0) {
 }
 console.log(`binary markers ok: ${markers.length}`);
 '@
-  $tempScript = Join-Path $env:TEMP ('codex-binary-marker-check-' + [guid]::NewGuid().ToString() + '.js')
+  New-Item -ItemType Directory -Force -Path $script:OperationTempRoot | Out-Null
+  $tempScript = Join-Path $script:OperationTempRoot ('codex-binary-marker-check-' + [guid]::NewGuid().ToString() + '.js')
   Set-Content -LiteralPath $tempScript -Value $script -Encoding UTF8
   try {
     & $node $tempScript $FilePath @Markers
@@ -112,7 +147,7 @@ console.log(`binary markers ok: ${markers.length}`);
 function Find-WindowsSdkTool {
   param([string]$ToolName)
   $roots = @(
-    (Join-Path $env:TEMP 'codex-remote-control-sdk-buildtools'),
+    $script:SdkBuildToolsCacheRoot,
     (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'),
     (Join-Path $env:ProgramFiles 'Windows Kits\10\bin'),
     (Join-Path $env:USERPROFILE '.nuget\packages\microsoft.windows.sdk.buildtools')
@@ -132,7 +167,7 @@ function Find-WindowsSdkTool {
 function Install-WindowsSdkBuildToolsViaNuGet {
   $packageId = 'microsoft.windows.sdk.buildtools'
   $version = '10.0.26100.4188'
-  $cacheRoot = Join-Path $env:TEMP 'codex-remote-control-sdk-buildtools'
+  $cacheRoot = $script:SdkBuildToolsCacheRoot
   $packageRoot = Join-Path $cacheRoot "$packageId.$version"
   $x64Root = Join-Path $packageRoot 'bin'
   if ((Find-WindowsSdkTool 'makeappx.exe') -and (Find-WindowsSdkTool 'signtool.exe')) {
@@ -156,7 +191,7 @@ function Install-WindowsSdkBuildToolsViaNuGet {
     if ($curl) {
       $curlArgs = @('-L', '--connect-timeout', '30', '--max-time', '240', '-o', $nupkg, $url)
       if ($proxy) {
-        Write-Log "using explicit BuildTools proxy: $proxy"
+        Write-Log 'using explicit BuildTools proxy (URI and credentials redacted)'
         $curlArgs = @('-L', '--proxy', $proxy, '--connect-timeout', '30', '--max-time', '240', '-o', $nupkg, $url)
       } else {
         Write-Log 'downloading Windows SDK BuildTools without an explicit proxy'
@@ -170,7 +205,7 @@ function Install-WindowsSdkBuildToolsViaNuGet {
       try {
         $ProgressPreference = 'SilentlyContinue'
         if ($proxy) {
-          Write-Log "using explicit BuildTools proxy: $proxy"
+          Write-Log 'using explicit BuildTools proxy (URI and credentials redacted)'
           Invoke-WebRequest -Uri $url -OutFile $nupkg -UseBasicParsing -TimeoutSec 240 -Proxy $proxy
         } else {
           Write-Log 'downloading Windows SDK BuildTools without an explicit proxy'
@@ -313,19 +348,37 @@ function Get-OrCreateSigningCertificate {
 
 function Trust-SigningCertificate {
   param([System.Security.Cryptography.X509Certificates.X509Certificate2]$Cert)
-  $tempCert = Join-Path $env:TEMP ('codex-remote-control-signing-' + $Cert.Thumbprint + '.cer')
+  New-Item -ItemType Directory -Force -Path $script:OperationTempRoot | Out-Null
+  $tempCert = Join-Path $script:OperationTempRoot ('codex-remote-control-signing-' + $Cert.Thumbprint + '.cer')
   Export-Certificate -Cert $Cert -FilePath $tempCert -Force | Out-Null
   Import-Certificate -FilePath $tempCert -CertStoreLocation Cert:\CurrentUser\TrustedPeople | Out-Null
   Remove-Item -LiteralPath $tempCert -Force -ErrorAction SilentlyContinue
 }
 
 function Stop-CodexDesktopProcesses {
-  $processes = Get-Process -Name 'Codex' -ErrorAction SilentlyContinue | Where-Object {
-    $_.Path -and $_.Path -like '*\WindowsApps\OpenAI.Codex_*\app\Codex.exe'
+  $packageRoots = @(
+    Get-AppxPackage -Name 'OpenAI.Codex' -ErrorAction SilentlyContinue |
+      Where-Object { $_.InstallLocation } |
+      ForEach-Object { ([string]$_.InstallLocation).TrimEnd('\') }
+  )
+  if ($packageRoots.Count -lt 1) {
+    return
   }
-  foreach ($p in $processes) {
-    Write-Log "stopping Codex desktop process pid=$($p.Id)"
-    Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+  $processes = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+    $candidate = $_
+    if ($candidate.Name -notin @('ChatGPT.exe', 'Codex.exe') -or -not $candidate.ExecutablePath) {
+      return $false
+    }
+    foreach ($root in $packageRoots) {
+      if ($candidate.ExecutablePath.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+      }
+    }
+    return $false
+  }
+  foreach ($process in $processes) {
+    Write-Log "stopping Codex desktop package process pid=$($process.ProcessId) name=$($process.Name)"
+    Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
   }
 }
 
@@ -333,6 +386,9 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $patcher = Join-Path $PSScriptRoot 'patch-remote-control-asar.cjs'
 if (-not (Test-Path -LiteralPath $patcher -PathType Leaf)) {
   Fail "patcher not found: $patcher"
+}
+if ($Launch -and -not $Install) {
+  Fail '-Launch requires -Install'
 }
 
 $pkg = Get-AppxPackage -Name 'OpenAI.Codex' -ErrorAction Stop |
@@ -592,13 +648,18 @@ try {
     }
     Write-Log "installing patched MSIX: $msixPath"
     Add-AppxPackage -Path $msixPath -ErrorAction Stop
-    $installed = Get-AppxPackage -Name 'OpenAI.Codex' -ErrorAction Stop | Select-Object -First 1
+    $installed = Get-AppxPackage -Name 'OpenAI.Codex' -ErrorAction Stop |
+      Sort-Object Version -Descending |
+      Select-Object -First 1
     Write-Log "installed package: $($installed.PackageFullName)"
     $installedSuccessfully = $true
     if ($Launch) {
-      $exe = Join-Path $installed.InstallLocation 'app\Codex.exe'
-      Write-Log "launching Codex: $exe"
-      Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe)
+      try {
+        $launchedAumid = Start-InstalledAppxPackage -Package $installed
+        Write-Log "launch request submitted: $launchedAumid"
+      } catch {
+        Write-Log "warning: patched package is installed, but AppUserModelId launch failed: $($_.Exception.Message)"
+      }
     }
   } else {
     Write-Log "patched MSIX ready: $msixPath"
@@ -614,7 +675,7 @@ try {
       Write-Log "warning: cleanup failed, leaving workdir for inspection: $workRoot ($($_.Exception.Message))"
     }
   }
-  if ($installedSuccessfully -and -not $KeepWorkDir -and (Test-Path -LiteralPath $msixPath -PathType Leaf)) {
+  if ($installedSuccessfully -and $scriptSucceeded -and -not $KeepWorkDir -and (Test-Path -LiteralPath $msixPath -PathType Leaf)) {
     try {
       Remove-Item -LiteralPath $msixPath -Force -ErrorAction Stop
       Write-Log "removed installed patched MSIX artifact: $msixPath"
@@ -622,13 +683,21 @@ try {
       Write-Log "warning: could not remove installed patched MSIX artifact: $msixPath ($($_.Exception.Message))"
     }
   }
-  $sdkCacheRoot = Join-Path $env:TEMP 'codex-remote-control-sdk-buildtools'
-  if ($installedSuccessfully -and -not $KeepWorkDir -and (Test-Path -LiteralPath $sdkCacheRoot)) {
+  $sdkCacheRoot = $script:SdkBuildToolsCacheRoot
+  if ($installedSuccessfully -and $scriptSucceeded -and -not $KeepWorkDir -and (Test-Path -LiteralPath $sdkCacheRoot)) {
     try {
-      Remove-DirectoryRobust -Path $sdkCacheRoot -RequiredRoot $env:TEMP
+      Remove-DirectoryRobust -Path $sdkCacheRoot -RequiredRoot $OutputRoot
       Write-Log "removed temporary Windows SDK BuildTools cache: $sdkCacheRoot"
     } catch {
       Write-Log "warning: could not remove temporary Windows SDK BuildTools cache: $sdkCacheRoot ($($_.Exception.Message))"
+    }
+  }
+  if ($scriptSucceeded -and -not $KeepWorkDir -and (Test-Path -LiteralPath $script:OperationTempRoot)) {
+    try {
+      Remove-DirectoryRobust -Path $script:OperationTempRoot -RequiredRoot $OutputRoot
+      Write-Log "removed operation temp root: $script:OperationTempRoot"
+    } catch {
+      Write-Log "warning: could not remove operation temp root: $script:OperationTempRoot ($($_.Exception.Message))"
     }
   }
 }

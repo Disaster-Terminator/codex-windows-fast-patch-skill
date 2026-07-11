@@ -6,6 +6,7 @@ param(
   [string]$CodexRepoUrl = 'https://github.com/openai/codex.git',
   [string]$CodexSourceRef,
   [string]$AppServerVersion,
+  [string]$PatchPathOverride,
   [string]$SourceRoot,
   [string]$CacheRoot,
   [string]$TempRoot,
@@ -21,7 +22,16 @@ param(
 $ErrorActionPreference = 'Stop'
 $ScriptRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $SkillRoot = Split-Path -Parent $ScriptRoot
-$PatchPath = Join-Path $SkillRoot 'references\remote-control-native-replacement.patch'
+$NativePatchRelativePaths = @{
+  '0.142.4' = 'references\remote-control-native-replacement-0.142.4.patch'
+  '0.144.0-alpha.4' = 'references\remote-control-native-replacement.patch'
+}
+$PatchPath = $null
+$WindowsSdkCppVersion = '10.0.26100.4188'
+$WindowsSdkCppPackageIds = @(
+  'Microsoft.Windows.SDK.CPP',
+  'Microsoft.Windows.SDK.CPP.x64'
+)
 
 function Write-Log {
   param([string]$Message)
@@ -31,6 +41,81 @@ function Write-Log {
 function Fail {
   param([string]$Message)
   throw $Message
+}
+
+function Get-SupportedNativePatchVersions {
+  return @($NativePatchRelativePaths.Keys | Sort-Object)
+}
+
+function Resolve-NativePatchPath {
+  $supported = (Get-SupportedNativePatchVersions) -join ', '
+  if ([string]::IsNullOrWhiteSpace($CodexSourceRef) -or $CodexSourceRef.Trim() -notmatch '^rust-v(.+)$') {
+    Fail "CodexSourceRef must be a supported rust-v<version> tag. Supported bundled native patch versions: $supported. For another source ref, provide a validated patch with -PatchPathOverride."
+  }
+  $sourceVersion = $Matches[1]
+  if ([string]::IsNullOrWhiteSpace($AppServerVersion) -or $AppServerVersion.Trim() -ne $sourceVersion) {
+    Fail "CodexSourceRef and AppServerVersion must match. CodexSourceRef=$CodexSourceRef AppServerVersion=$AppServerVersion"
+  }
+  if (-not [string]::IsNullOrWhiteSpace($PatchPathOverride)) {
+    $resolvedOverride = Resolve-FullPath $PatchPathOverride.Trim()
+    if (-not (Test-Path -LiteralPath $resolvedOverride -PathType Leaf)) {
+      Fail "PatchPathOverride does not exist: $resolvedOverride"
+    }
+    Write-Log "using explicit native patch override for Codex Rust ${sourceVersion}: $resolvedOverride"
+    return $resolvedOverride
+  }
+  if (-not $NativePatchRelativePaths.ContainsKey($sourceVersion)) {
+    Fail "No bundled native patch is available for Codex Rust ${sourceVersion}. Supported bundled native patch versions: $supported. Provide a validated version-specific patch with -PatchPathOverride."
+  }
+  $resolved = Join-Path $SkillRoot $NativePatchRelativePaths[$sourceVersion]
+  Write-Log "selected bundled native patch for Codex Rust ${sourceVersion}: $resolved"
+  return $resolved
+}
+
+function Resolve-NativeBuildVersion {
+  $hasSourceRef = -not [string]::IsNullOrWhiteSpace($CodexSourceRef)
+  $hasAppServerVersion = -not [string]::IsNullOrWhiteSpace($AppServerVersion)
+  if ($hasSourceRef -xor $hasAppServerVersion) {
+    Fail 'CodexSourceRef and AppServerVersion must be supplied together.'
+  }
+  if ($hasSourceRef) {
+    return
+  }
+
+  $getAppxPackage = Get-Command 'Get-AppxPackage' -ErrorAction SilentlyContinue
+  if (-not $getAppxPackage) {
+    Fail 'Cannot auto-detect the installed native Codex version because Get-AppxPackage is unavailable. Supply -CodexSourceRef and -AppServerVersion explicitly.'
+  }
+  $package = Get-AppxPackage -Name OpenAI.Codex -ErrorAction SilentlyContinue |
+    Sort-Object Version -Descending |
+    Select-Object -First 1
+  if (-not $package -or [string]::IsNullOrWhiteSpace($package.InstallLocation)) {
+    Fail 'Cannot auto-detect the installed native Codex version because OpenAI.Codex is not installed. Supply -CodexSourceRef and -AppServerVersion explicitly.'
+  }
+  $installedNative = Join-Path $package.InstallLocation 'app\resources\codex.exe'
+  if (-not (Test-Path -LiteralPath $installedNative -PathType Leaf)) {
+    Fail "Cannot auto-detect the installed native Codex version because codex.exe is missing: $installedNative. Supply -CodexSourceRef and -AppServerVersion explicitly."
+  }
+
+  $probe = Join-Path $TempRoot ('installed-native-version-probe-' + [guid]::NewGuid().ToString('N') + '.exe')
+  Copy-Item -LiteralPath $installedNative -Destination $probe -Force
+  try {
+    $result = Invoke-NativeProcess -FilePath $probe -Arguments @('--version') -CaptureOutput
+  } finally {
+    Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+  }
+  $versionMatch = [regex]::Match($result.Output, '(?im)\bcodex-cli\s+([^\s]+)')
+  if ($result.ExitCode -ne 0 -or -not $versionMatch.Success) {
+    Fail "Could not parse the installed native Codex version from a WorkRoot copy. Supply -CodexSourceRef and -AppServerVersion explicitly. Output: $($result.Output.Trim())"
+  }
+  $detectedVersion = $versionMatch.Groups[1].Value.Trim()
+  if (-not $NativePatchRelativePaths.ContainsKey($detectedVersion)) {
+    $supported = (Get-SupportedNativePatchVersions) -join ', '
+    Fail "Installed native Codex version $detectedVersion has no bundled patch mapping. Supported bundled patch versions: $supported. Supply matching -CodexSourceRef, -AppServerVersion, and -PatchPathOverride explicitly."
+  }
+  $script:CodexSourceRef = "rust-v$detectedVersion"
+  $script:AppServerVersion = $detectedVersion
+  Write-Log "auto-detected installed native Codex version from WorkRoot copy: $detectedVersion"
 }
 
 function Resolve-FullPath {
@@ -95,6 +180,366 @@ function Import-MsvcBuildEnvironment {
     Fail "MSVC build environment did not provide cl.exe and link.exe after loading vcvars64.bat."
   }
   Write-Log "MSVC build environment loaded: $($cl.Source)"
+}
+
+function Add-ProcessEnvironmentPaths {
+  param(
+    [Parameter(Mandatory = $true)][string]$Name,
+    [Parameter(Mandatory = $true)][string[]]$Paths
+  )
+
+  $comparison = [StringComparer]::OrdinalIgnoreCase
+  $entries = New-Object System.Collections.Generic.List[string]
+  $seen = New-Object 'System.Collections.Generic.HashSet[string]' ($comparison)
+  foreach ($path in $Paths + @(([Environment]::GetEnvironmentVariable($Name, 'Process') -split ';'))) {
+    if ([string]::IsNullOrWhiteSpace($path)) {
+      continue
+    }
+    $trimmed = $path.Trim().TrimEnd('\')
+    if ((Test-Path -LiteralPath $trimmed -PathType Container) -and $seen.Add($trimmed)) {
+      $entries.Add($trimmed)
+    }
+  }
+  [Environment]::SetEnvironmentVariable($Name, ($entries -join ';'), 'Process')
+}
+
+function Test-WindowsSdkBuildEnvironmentAvailable {
+  $kernel32Available = $false
+  $ucrtAvailable = $false
+  foreach ($entry in @($env:LIB -split ';')) {
+    if ([string]::IsNullOrWhiteSpace($entry)) {
+      continue
+    }
+    if (Test-Path -LiteralPath (Join-Path $entry.Trim() 'kernel32.lib') -PathType Leaf) {
+      $kernel32Available = $true
+    }
+    if (Test-Path -LiteralPath (Join-Path $entry.Trim() 'ucrt.lib') -PathType Leaf) {
+      $ucrtAvailable = $true
+    }
+  }
+  $windowsHeaderAvailable = $false
+  foreach ($entry in @($env:INCLUDE -split ';')) {
+    if (-not [string]::IsNullOrWhiteSpace($entry) -and (Test-Path -LiteralPath (Join-Path $entry.Trim() 'windows.h') -PathType Leaf)) {
+      $windowsHeaderAvailable = $true
+      break
+    }
+  }
+  return ($kernel32Available -and $ucrtAvailable -and $windowsHeaderAvailable)
+}
+
+function Find-WindowsSdkFile {
+  param(
+    [Parameter(Mandatory = $true)][string]$Root,
+    [Parameter(Mandatory = $true)][string]$FileName,
+    [string]$PathPattern
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Root) -or -not (Test-Path -LiteralPath $Root -PathType Container)) {
+    return $null
+  }
+  $hits = foreach ($hit in @(Get-ChildItem -LiteralPath $Root -Recurse -Filter $FileName -File -ErrorAction SilentlyContinue)) {
+    if ([string]::IsNullOrWhiteSpace($PathPattern) -or $hit.FullName -match $PathPattern) {
+      $hit
+    }
+  }
+  return $hits | Sort-Object FullName -Descending | Select-Object -First 1
+}
+
+function Get-WindowsSdkBuildEnvironmentCandidate {
+  param([Parameter(Mandatory = $true)][string]$Root)
+
+  $resolvedRoot = Resolve-FullPath $Root
+  $kernels = Get-ChildItem -LiteralPath $resolvedRoot -Recurse -Filter 'kernel32.lib' -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -match '(?i)\\x64\\kernel32\.lib$' } |
+    Sort-Object FullName -Descending
+  foreach ($kernel32 in $kernels) {
+    $installedMatch = [regex]::Match($kernel32.FullName, '(?i)\\Lib\\(?<version>[^\\]+)\\um\\x64\\kernel32\.lib$')
+    if ($installedMatch.Success) {
+      $sdkRoot = $kernel32.FullName.Substring(0, $installedMatch.Index)
+      $version = $installedMatch.Groups['version'].Value
+      $ucrtPath = Join-Path $sdkRoot "Lib\$version\ucrt\x64\ucrt.lib"
+      $windowsHeaderPath = Join-Path $sdkRoot "Include\$version\um\Windows.h"
+      if (-not (Test-Path -LiteralPath $ucrtPath -PathType Leaf) -or -not (Test-Path -LiteralPath $windowsHeaderPath -PathType Leaf)) {
+        continue
+      }
+      $tool = Find-WindowsSdkFile -Root (Join-Path $sdkRoot 'bin') -FileName 'rc.exe' -PathPattern "(?i)\\$([regex]::Escape($version))\\x64\\rc\.exe$"
+      return [pscustomobject]@{
+        Root = $sdkRoot
+        Version = $version
+        Kernel32 = $kernel32
+        Ucrt = Get-Item -LiteralPath $ucrtPath
+        WindowsHeader = Get-Item -LiteralPath $windowsHeaderPath
+        Tool = $tool
+      }
+    }
+
+  }
+  return $null
+}
+
+function Add-WindowsSdkBuildEnvironment {
+  param([Parameter(Mandatory = $true)][string[]]$SearchRoots)
+
+  $candidate = $null
+  foreach ($root in $SearchRoots) {
+    $candidate = Get-WindowsSdkBuildEnvironmentCandidate -Root $root
+    if ($candidate) {
+      break
+    }
+  }
+  if (-not $candidate) {
+    return $false
+  }
+
+  $includeRoot = Split-Path -Parent $candidate.WindowsHeader.DirectoryName
+  $includePaths = @('ucrt', 'shared', 'um', 'winrt', 'cppwinrt') |
+    ForEach-Object { Join-Path $includeRoot $_ } |
+    Where-Object { Test-Path -LiteralPath $_ -PathType Container }
+  if ($includePaths.Count -eq 0) {
+    return $false
+  }
+
+  Add-ProcessEnvironmentPaths -Name 'LIB' -Paths @($candidate.Kernel32.DirectoryName, $candidate.Ucrt.DirectoryName)
+  Add-ProcessEnvironmentPaths -Name 'LIBPATH' -Paths @($candidate.Kernel32.DirectoryName, $candidate.Ucrt.DirectoryName)
+  Add-ProcessEnvironmentPaths -Name 'INCLUDE' -Paths $includePaths
+
+  if ($candidate.Tool) {
+    Add-ProcessEnvironmentPaths -Name 'PATH' -Paths @($candidate.Tool.DirectoryName)
+  }
+
+  Write-Log "Windows SDK build environment ready: root=$($candidate.Root) version=$($candidate.Version) kernel32=$($candidate.Kernel32.FullName)"
+  return (Test-WindowsSdkBuildEnvironmentAvailable)
+}
+
+function Get-WindowsSdkDownloadProxy {
+  foreach ($name in @('HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy')) {
+    $value = [Environment]::GetEnvironmentVariable($name, 'Process')
+    if (-not [string]::IsNullOrWhiteSpace($value)) {
+      return [pscustomobject]@{ Uri = $value.Trim(); Source = $name }
+    }
+  }
+
+  $client = New-Object System.Net.Sockets.TcpClient
+  try {
+    $connect = $client.BeginConnect('127.0.0.1', 10808, $null, $null)
+    if ($connect.AsyncWaitHandle.WaitOne(500) -and $client.Connected) {
+      $client.EndConnect($connect)
+      return [pscustomobject]@{ Uri = 'http://127.0.0.1:10808'; Source = 'listening local proxy' }
+    }
+  } catch {
+    # Direct download remains available when the optional local proxy is absent.
+  } finally {
+    $client.Dispose()
+  }
+  return $null
+}
+
+function Get-SanitizedDownloadErrorText {
+  param(
+    [string]$Text,
+    [string]$ProxyUri
+  )
+  $safe = [string]$Text
+  if (-not [string]::IsNullOrWhiteSpace($ProxyUri)) {
+    $safe = $safe.Replace($ProxyUri, '<configured proxy>')
+  }
+  return [regex]::Replace($safe, '(?i)(https?://)[^/@\s]+@', '$1<credentials-redacted>@')
+}
+
+function Test-NuGetPackageArchive {
+  param(
+    [Parameter(Mandatory = $true)][string]$PackagePath,
+    [Parameter(Mandatory = $true)][string[]]$ExpectedPayloadNames
+  )
+  if (-not (Test-Path -LiteralPath $PackagePath -PathType Leaf) -or (Get-Item -LiteralPath $PackagePath).Length -le 100000) {
+    return $false
+  }
+  try {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($PackagePath)
+    try {
+      $remaining = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+      foreach ($name in $ExpectedPayloadNames) {
+        [void]$remaining.Add($name)
+      }
+      foreach ($entry in $archive.Entries) {
+        if ($entry.Length -gt 0) {
+          [void]$remaining.Remove([System.IO.Path]::GetFileName($entry.FullName))
+        }
+        if ($remaining.Count -eq 0) {
+          return $true
+        }
+      }
+    } finally {
+      $archive.Dispose()
+    }
+  } catch {
+    return $false
+  }
+  return $false
+}
+
+function Save-NuGetPackage {
+  param(
+    [Parameter(Mandatory = $true)][string]$PackageId,
+    [Parameter(Mandatory = $true)][string]$Version,
+    [Parameter(Mandatory = $true)][string]$Destination,
+    [Parameter(Mandatory = $true)][string[]]$ExpectedPayloadNames
+  )
+
+  if (Test-NuGetPackageArchive -PackagePath $Destination -ExpectedPayloadNames $ExpectedPayloadNames) {
+    Write-Log "using cached NuGet package: $Destination"
+    return
+  }
+  if (Test-Path -LiteralPath $Destination) {
+    Write-Log "removing invalid cached NuGet package: $Destination"
+    Remove-Item -LiteralPath $Destination -Force
+  }
+  $partial = "$Destination.partial"
+  Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
+
+  $lowerId = $PackageId.ToLowerInvariant()
+  $url = "https://api.nuget.org/v3-flatcontainer/$lowerId/$Version/$lowerId.$Version.nupkg"
+  $proxy = Get-WindowsSdkDownloadProxy
+  $curl = Get-Command 'curl.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($proxy) {
+    Write-Log "using $($proxy.Source) for Windows SDK NuGet download"
+  } else {
+    Write-Log 'using direct Windows SDK NuGet download'
+  }
+
+  for ($attempt = 1; $attempt -le 3; $attempt++) {
+    Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
+    try {
+      Write-Log "downloading $PackageId $Version to $partial (attempt $attempt of 3)"
+      if ($curl) {
+        $arguments = @('-fsSL', '--retry', '2', '--connect-timeout', '30', '--max-time', '900', '-o', $partial, $url)
+        if ($proxy) {
+          $arguments = @('-fsSL', '--retry', '2', '--proxy', $proxy.Uri, '--connect-timeout', '30', '--max-time', '900', '-o', $partial, $url)
+        }
+        $result = Invoke-NativeProcess -FilePath $curl.Source -Arguments $arguments -CaptureOutput
+        if ($result.ExitCode -ne 0) {
+          if (-not [string]::IsNullOrWhiteSpace($result.Output)) {
+            Write-Host (Get-SanitizedDownloadErrorText -Text $result.Output -ProxyUri $(if ($proxy) { $proxy.Uri } else { '' }))
+          }
+          Fail "failed to download $PackageId $Version (curl exit code $($result.ExitCode))"
+        }
+      } else {
+        $oldProgress = $ProgressPreference
+        try {
+          $ProgressPreference = 'SilentlyContinue'
+          $request = @{
+            Uri = $url
+            OutFile = $partial
+            UseBasicParsing = $true
+            TimeoutSec = 900
+          }
+          if ($proxy) {
+            $request.Proxy = $proxy.Uri
+          }
+          Invoke-WebRequest @request
+        } finally {
+          $ProgressPreference = $oldProgress
+        }
+      }
+
+      if (-not (Test-NuGetPackageArchive -PackagePath $partial -ExpectedPayloadNames $ExpectedPayloadNames)) {
+        Fail "downloaded NuGet package is not a valid ZIP with expected payloads $($ExpectedPayloadNames -join ', '): $PackageId $Version"
+      }
+      Move-Item -LiteralPath $partial -Destination $Destination -Force
+      return
+    } catch {
+      $failure = $_
+      Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
+      $safeFailureMessage = Get-SanitizedDownloadErrorText -Text $failure.Exception.Message -ProxyUri $(if ($proxy) { $proxy.Uri } else { '' })
+      if ($attempt -ge 3) {
+        Fail "failed to download $PackageId $Version after 3 attempts: $safeFailureMessage"
+      }
+      Write-Log "Windows SDK NuGet download attempt $attempt failed; retrying: $safeFailureMessage"
+      Start-Sleep -Seconds ([Math]::Min(5, $attempt * 2))
+    }
+  }
+}
+
+function Install-WindowsSdkCppViaNuGet {
+  param([Parameter(Mandatory = $true)][string]$SdkCacheRoot)
+
+  Test-PathUnderRoot -Path $SdkCacheRoot -Root $WorkRoot -Label 'WindowsSdkCacheRoot'
+  New-Item -ItemType Directory -Force -Path $SdkCacheRoot | Out-Null
+  foreach ($packageId in $WindowsSdkCppPackageIds) {
+    $lowerId = $packageId.ToLowerInvariant()
+    $nupkg = Join-Path $SdkCacheRoot "$lowerId.$WindowsSdkCppVersion.nupkg"
+    $packageRoot = Join-Path $SdkCacheRoot "$lowerId.$WindowsSdkCppVersion"
+    $payloadNames = if ($packageId -ieq 'Microsoft.Windows.SDK.CPP.x64') { @('kernel32.lib', 'ucrt.lib') } else { @('windows.h') }
+    $hasPayload = (Test-Path -LiteralPath $packageRoot -PathType Container) -and
+      (@($payloadNames | Where-Object {
+        $null -eq (Get-ChildItem -LiteralPath $packageRoot -Recurse -Filter $_ -File -ErrorAction SilentlyContinue | Select-Object -First 1)
+      }).Count -eq 0)
+    if ($hasPayload) {
+      Write-Log "using extracted NuGet package: $packageRoot"
+      continue
+    }
+
+    $installed = $false
+    for ($attempt = 1; $attempt -le 2 -and -not $installed; $attempt++) {
+      $extractPartial = "$packageRoot.partial"
+      $zip = Join-Path $SdkCacheRoot "$lowerId.$WindowsSdkCppVersion.zip"
+      try {
+        Save-NuGetPackage -PackageId $packageId -Version $WindowsSdkCppVersion -Destination $nupkg -ExpectedPayloadNames $payloadNames
+        Remove-Item -LiteralPath $extractPartial -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Force -Path $extractPartial | Out-Null
+        Copy-Item -LiteralPath $nupkg -Destination $zip -Force
+        Expand-Archive -LiteralPath $zip -DestinationPath $extractPartial -Force
+        $missingPayloads = @($payloadNames | Where-Object {
+          $null -eq (Get-ChildItem -LiteralPath $extractPartial -Recurse -Filter $_ -File -ErrorAction SilentlyContinue | Select-Object -First 1)
+        })
+        if ($missingPayloads.Count -gt 0) {
+          throw "extracted package is missing expected payloads: $($missingPayloads -join ', ')"
+        }
+        Remove-Item -LiteralPath $packageRoot -Recurse -Force -ErrorAction SilentlyContinue
+        Move-Item -LiteralPath $extractPartial -Destination $packageRoot
+        $installed = $true
+      } catch {
+        Remove-Item -LiteralPath $extractPartial -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $packageRoot -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $nupkg -Force -ErrorAction SilentlyContinue
+        if ($attempt -ge 2) {
+          throw
+        }
+        Write-Log "cached/downloaded $PackageId package was unusable; deleting it and retrying once"
+      } finally {
+        Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
+      }
+    }
+  }
+  return $SdkCacheRoot
+}
+
+function Initialize-WindowsSdkBuildEnvironment {
+  if ($BuildTarget -notlike '*windows-msvc') {
+    return
+  }
+  if (Test-WindowsSdkBuildEnvironmentAvailable) {
+    Write-Log 'Windows SDK libraries and headers already available from the MSVC environment'
+    return
+  }
+
+  $installedRoots = @(
+    $env:WindowsSdkDir,
+    (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10'),
+    (Join-Path $env:ProgramFiles 'Windows Kits\10')
+  ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) }
+  if ($installedRoots.Count -gt 0 -and (Add-WindowsSdkBuildEnvironment -SearchRoots $installedRoots)) {
+    Write-Log 'using an existing Windows SDK installation; NuGet bootstrap not needed'
+    return
+  }
+
+  $sdkCacheRoot = Join-Path $CacheRoot "windows-sdk-cpp\$WindowsSdkCppVersion"
+  Write-Log "kernel32.lib is unavailable; bootstrapping Windows SDK C++ packages under WorkRoot: $sdkCacheRoot"
+  $coherentSdkRoot = Install-WindowsSdkCppViaNuGet -SdkCacheRoot $sdkCacheRoot
+  if (-not (Add-WindowsSdkBuildEnvironment -SearchRoots @($coherentSdkRoot))) {
+    Fail "NuGet Windows SDK C++ packages did not provide a usable x64 kernel32.lib/ucrt.lib/header environment: $sdkCacheRoot"
+  }
 }
 
 function ConvertTo-NativeArgumentString {
@@ -276,6 +721,38 @@ function Test-GitWorktreeDirty {
   return (-not [string]::IsNullOrWhiteSpace($status.Output))
 }
 
+function Get-GitCommit {
+  param(
+    [Parameter(Mandatory = $true)][string]$GitPath,
+    [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+    [Parameter(Mandatory = $true)][string]$Revision
+  )
+  $result = Invoke-NativeProcess -FilePath $GitPath -Arguments @('-C', $RepositoryRoot, 'rev-parse', '--verify', "$Revision^{commit}") -CaptureOutput
+  if ($result.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($result.Output)) {
+    return $null
+  }
+  return ($result.Output.Trim() -split '\s+')[0]
+}
+
+function Resolve-CodexSourceRefCommit {
+  param(
+    [Parameter(Mandatory = $true)][string]$GitPath,
+    [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+    [Parameter(Mandatory = $true)][string]$SourceRef
+  )
+  $commit = Get-GitCommit -GitPath $GitPath -RepositoryRoot $RepositoryRoot -Revision $SourceRef
+  if ($commit) {
+    return $commit
+  }
+  Write-Log "fetching Codex source ref for exact commit verification: $SourceRef"
+  Invoke-Checked -FilePath $GitPath -Arguments @('-C', $RepositoryRoot, 'fetch', '--depth', '1', 'origin', $SourceRef) -ErrorMessage "failed to fetch Codex source ref '$SourceRef'"
+  $commit = Get-GitCommit -GitPath $GitPath -RepositoryRoot $RepositoryRoot -Revision 'FETCH_HEAD'
+  if (-not $commit) {
+    Fail "failed to resolve Codex source ref commit: $SourceRef"
+  }
+  return $commit
+}
+
 function Checkout-CodexSourceRef {
   param(
     [Parameter(Mandatory = $true)][string]$GitPath,
@@ -288,9 +765,18 @@ function Checkout-CodexSourceRef {
     return
   }
 
+  $requestedCommit = Resolve-CodexSourceRefCommit -GitPath $GitPath -RepositoryRoot $RepositoryRoot -SourceRef $ref
+  $currentCommit = Get-GitCommit -GitPath $GitPath -RepositoryRoot $RepositoryRoot -Revision 'HEAD'
+  if (-not $currentCommit) {
+    Fail "failed to resolve current Codex source HEAD: $RepositoryRoot"
+  }
+
   $reverseCheck = Test-GitPatchCheck -GitPath $GitPath -RepositoryRoot $RepositoryRoot -PatchFile $PatchPath -Reverse
   if ($reverseCheck.ExitCode -eq 0) {
-    Write-Log "native patch already applied; leaving existing source ref unchanged"
+    if ($currentCommit -ne $requestedCommit) {
+      Fail "native patch is already applied, but SourceRoot HEAD does not match requested CodexSourceRef. HEAD=$currentCommit requested=$requestedCommit ref=$ref"
+    }
+    Write-Log "native patch already applied on requested source commit: $currentCommit"
     return
   }
 
@@ -299,8 +785,11 @@ function Checkout-CodexSourceRef {
   }
 
   Write-Log "checking out Codex source ref: $ref"
-  Invoke-Checked -FilePath $GitPath -Arguments @('-C', $RepositoryRoot, 'fetch', '--depth', '1', 'origin', $ref) -ErrorMessage "failed to fetch Codex source ref '$ref'"
-  Invoke-Checked -FilePath $GitPath -Arguments @('-C', $RepositoryRoot, 'checkout', '--detach', 'FETCH_HEAD') -ErrorMessage "failed to check out Codex source ref '$ref'"
+  Invoke-Checked -FilePath $GitPath -Arguments @('-C', $RepositoryRoot, 'checkout', '--detach', $requestedCommit) -ErrorMessage "failed to check out Codex source ref '$ref'"
+  $checkedOutCommit = Get-GitCommit -GitPath $GitPath -RepositoryRoot $RepositoryRoot -Revision 'HEAD'
+  if ($checkedOutCommit -ne $requestedCommit) {
+    Fail "checked out Codex source commit does not match requested ref. HEAD=$checkedOutCommit requested=$requestedCommit ref=$ref"
+  }
 }
 
 function Set-CargoWorkspacePackageVersion {
@@ -351,33 +840,6 @@ function Test-PathUnderRoot {
   Fail "$Label must stay under WorkRoot. $Label=$fullPath WorkRoot=$fullRoot"
 }
 
-function Find-Bytes {
-  param(
-    [Parameter(Mandatory = $true)][byte[]]$Haystack,
-    [Parameter(Mandatory = $true)][byte[]]$Needle
-  )
-  if ($Needle.Length -eq 0 -or $Haystack.Length -lt $Needle.Length) {
-    return $false
-  }
-  $limit = $Haystack.Length - $Needle.Length
-  for ($i = 0; $i -le $limit; $i++) {
-    if ($Haystack[$i] -ne $Needle[0]) {
-      continue
-    }
-    $matched = $true
-    for ($j = 1; $j -lt $Needle.Length; $j++) {
-      if ($Haystack[$i + $j] -ne $Needle[$j]) {
-        $matched = $false
-        break
-      }
-    }
-    if ($matched) {
-      return $true
-    }
-  }
-  return $false
-}
-
 function Test-BinaryMarkers {
   param(
     [Parameter(Mandatory = $true)][string]$FilePath,
@@ -386,18 +848,53 @@ function Test-BinaryMarkers {
   if (-not (Test-Path -LiteralPath $FilePath -PathType Leaf)) {
     Fail "replacement codex.exe not found: $FilePath"
   }
-  $bytes = [System.IO.File]::ReadAllBytes($FilePath)
-  $missing = New-Object System.Collections.Generic.List[string]
+  $remaining = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
   foreach ($marker in $Markers) {
-    $needle = [System.Text.Encoding]::UTF8.GetBytes($marker)
-    if (-not (Find-Bytes -Haystack $bytes -Needle $needle)) {
-      $missing.Add($marker)
-    }
+    [void]$remaining.Add($marker)
   }
-  if ($missing.Count -gt 0) {
-    Fail "replacement codex.exe is missing native remote-control markers: $($missing -join ', ')"
+  $maxMarkerLength = ($Markers | ForEach-Object { $_.Length } | Measure-Object -Maximum).Maximum
+  $chunkSize = 8MB
+  $buffer = New-Object byte[] ($chunkSize + $maxMarkerLength)
+  $carry = 0
+  $stream = [System.IO.File]::Open($FilePath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+  try {
+    while ($remaining.Count -gt 0) {
+      $read = $stream.Read($buffer, $carry, $chunkSize)
+      if ($read -eq 0) {
+        break
+      }
+      $total = $carry + $read
+      $text = [System.Text.Encoding]::ASCII.GetString($buffer, 0, $total)
+      foreach ($marker in @($remaining)) {
+        if ($text.IndexOf($marker, [StringComparison]::Ordinal) -ge 0) {
+          [void]$remaining.Remove($marker)
+        }
+      }
+      $carry = [Math]::Min([Math]::Max(0, $maxMarkerLength - 1), $total)
+      if ($carry -gt 0) {
+        [System.Array]::Copy($buffer, $total - $carry, $buffer, 0, $carry)
+      }
+    }
+  } finally {
+    $stream.Dispose()
+  }
+  if ($remaining.Count -gt 0) {
+    Fail "replacement codex.exe is missing native remote-control markers: $(@($remaining) -join ', ')"
   }
   Write-Log "replacement codex.exe marker check passed: $($Markers.Count)"
+}
+
+function Get-CodexCliVersion {
+  param([Parameter(Mandatory = $true)][string]$FilePath)
+  if (-not (Test-Path -LiteralPath $FilePath -PathType Leaf)) {
+    Fail "replacement codex.exe not found: $FilePath"
+  }
+  $result = Invoke-NativeProcess -FilePath $FilePath -Arguments @('--version') -CaptureOutput
+  $match = [regex]::Match($result.Output, '(?im)\bcodex-cli\s+([^\s]+)')
+  if ($result.ExitCode -ne 0 -or -not $match.Success) {
+    Fail "could not parse replacement codex.exe version (exit code $($result.ExitCode)): $($result.Output.Trim())"
+  }
+  return $match.Groups[1].Value.Trim()
 }
 
 $WorkRoot = Resolve-FullPath $WorkRoot
@@ -428,15 +925,27 @@ foreach ($item in @(
   Test-PathUnderRoot -Path $item.Path -Root $WorkRoot -Label $item.Label
 }
 
+New-Item -ItemType Directory -Force -Path $WorkRoot, $CacheRoot, $TempRoot, $TargetRoot | Out-Null
+
+$env:CARGO_HOME = Join-Path $CacheRoot 'cargo'
+$env:RUSTUP_HOME = Join-Path $CacheRoot 'rustup'
+$env:TEMP = $TempRoot
+$env:TMP = $TempRoot
+$env:CARGO_TARGET_DIR = $TargetRoot
+$env:CARGO_BUILD_JOBS = '1'
+
+Resolve-NativeBuildVersion
+$PatchPath = Resolve-NativePatchPath
 if (-not (Test-Path -LiteralPath $PatchPath -PathType Leaf)) {
   Fail "native patch reference not found: $PatchPath"
 }
 
-New-Item -ItemType Directory -Force -Path $WorkRoot, $CacheRoot, $TempRoot, $TargetRoot | Out-Null
-
 $git = Get-RequiredCommand 'git'
-$cargo = Get-RequiredCommand 'cargo'
-Import-MsvcBuildEnvironment
+if (-not $SkipBuild) {
+  $cargo = Get-RequiredCommand 'cargo'
+  Import-MsvcBuildEnvironment
+  Initialize-WindowsSdkBuildEnvironment
+}
 
 if (-not $SkipClone) {
   if (-not (Test-Path -LiteralPath $SourceRoot -PathType Container)) {
@@ -476,7 +985,8 @@ if (-not $SkipPatch) {
       if (-not [string]::IsNullOrWhiteSpace($applyCheck.Output)) {
         Write-Host $applyCheck.Output
       }
-      Fail "native patch does not apply cleanly (exit code $($applyCheck.ExitCode))"
+      $supported = (Get-SupportedNativePatchVersions) -join ', '
+      Fail "native patch does not apply cleanly: $PatchPath (exit code $($applyCheck.ExitCode)). Supported bundled versions: $supported. For another source version, supply its validated patch with -PatchPathOverride."
     }
     Invoke-Checked -FilePath $git -Arguments @('-C', $SourceRoot, 'apply', $PatchPath) -ErrorMessage 'failed to apply native patch'
   }
@@ -488,19 +998,19 @@ if (-not (Test-Path -LiteralPath $CargoManifestPath -PathType Leaf)) {
   Fail "Cargo.toml not found at expected Codex Rust workspace path: $CargoManifestPath"
 }
 Set-CargoWorkspacePackageVersion -CargoManifestPath $CargoManifestPath -Version $AppServerVersion
-
-$env:CARGO_HOME = Join-Path $CacheRoot 'cargo'
-$env:RUSTUP_HOME = Join-Path $CacheRoot 'rustup'
-$env:TEMP = $TempRoot
-$env:TMP = $TempRoot
-$env:CARGO_TARGET_DIR = $TargetRoot
-$env:CARGO_BUILD_JOBS = '1'
+$sourceCommit = Get-GitCommit -GitPath $git -RepositoryRoot $SourceRoot -Revision 'HEAD'
+if (-not $sourceCommit) {
+  Fail "failed to resolve source commit after checkout: $SourceRoot"
+}
+$patchSha256 = (Get-FileHash -LiteralPath $PatchPath -Algorithm SHA256).Hash
 
 Write-Log "CARGO_HOME=$env:CARGO_HOME"
 Write-Log "RUSTUP_HOME=$env:RUSTUP_HOME"
 Write-Log "TEMP=$env:TEMP"
 Write-Log "CARGO_TARGET_DIR=$env:CARGO_TARGET_DIR"
 
+$builtExe = Join-Path $TargetRoot "$BuildTarget\$BuildProfile\codex.exe"
+$buildStampPath = Join-Path $TargetRoot "$BuildTarget\$BuildProfile\codex.remote-control-build.json"
 if (-not $SkipBuild) {
   Invoke-Checked -FilePath $cargo -Arguments @(
     "+$RustToolchain",
@@ -512,9 +1022,49 @@ if (-not $SkipBuild) {
     '--target',
     $BuildTarget
   ) -ErrorMessage 'failed to build patched native Codex app-server binary' -WorkingDirectory $CargoWorkspaceRoot
+  [pscustomobject]@{
+    schema = 'codex-remote-control-native-build-v1'
+    source_ref = $CodexSourceRef
+    source_commit = $sourceCommit
+    app_server_version = $AppServerVersion
+    patch_sha256 = $patchSha256
+    rust_toolchain = $RustToolchain
+    build_target = $BuildTarget
+    build_profile = $BuildProfile
+  } | ConvertTo-Json | Set-Content -LiteralPath $buildStampPath -Encoding UTF8
+  Write-Log "wrote native build stamp: $buildStampPath"
+} else {
+  if (-not (Test-Path -LiteralPath $buildStampPath -PathType Leaf)) {
+    Fail "SkipBuild requires a matching native build stamp, but none was found: $buildStampPath"
+  }
+  try {
+    $buildStamp = Get-Content -Raw -LiteralPath $buildStampPath | ConvertFrom-Json
+  } catch {
+    Fail "SkipBuild native build stamp is invalid JSON: $buildStampPath ($($_.Exception.Message))"
+  }
+  $expectedStamp = @{
+    schema = 'codex-remote-control-native-build-v1'
+    source_ref = $CodexSourceRef
+    source_commit = $sourceCommit
+    app_server_version = $AppServerVersion
+    patch_sha256 = $patchSha256
+    rust_toolchain = $RustToolchain
+    build_target = $BuildTarget
+    build_profile = $BuildProfile
+  }
+  foreach ($key in $expectedStamp.Keys) {
+    if ([string]$buildStamp.$key -ne [string]$expectedStamp[$key]) {
+      Fail "SkipBuild native build stamp mismatch for ${key}: actual=$($buildStamp.$key) expected=$($expectedStamp[$key])"
+    }
+  }
+  Write-Log 'SkipBuild native build stamp matches requested source, patch, version, toolchain, target, and profile'
 }
 
-$builtExe = Join-Path $TargetRoot "$BuildTarget\$BuildProfile\codex.exe"
+$builtVersion = Get-CodexCliVersion -FilePath $builtExe
+if ($builtVersion -ne $AppServerVersion) {
+  Fail "replacement codex.exe version mismatch: actual=$builtVersion expected=$AppServerVersion file=$builtExe"
+}
+Write-Log "replacement codex.exe version verified: $builtVersion"
 $markers = @(
   'remote_control_app_server_isolated_oauth_used',
   'remote_control_native_remote_json_first',
@@ -534,4 +1084,5 @@ Write-Log "replacement native binary ready: $builtExe"
   CacheRoot = $CacheRoot
   TargetRoot = $TargetRoot
   TempRoot = $TempRoot
+  BuildStampPath = $buildStampPath
 } | ConvertTo-Json

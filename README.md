@@ -39,7 +39,7 @@
 - `scripts/patch-dynamic-tools-schema.cjs`：dynamicTools MSIX 脚本使用的 Electron bundle patcher。
 - `scripts/patch-remote-control-windows-msix.ps1`：手机远控 MSIX / ASAR 补丁和 marker 校验参考实现。
 - `scripts/patch-remote-control-asar.cjs`：手机远控 Electron bundle patcher。
-- `scripts/build-remote-control-native-replacement.ps1`：当 native app-server 因 API-key 主认证拒绝手机远控时，在指定工作目录下构建 patched `app\resources\codex.exe` replacement；如果手机提示版本过期，可用 `-CodexSourceRef` 和 `-AppServerVersion` 构建匹配原生 app-server 版本的 replacement。
+- `scripts/build-remote-control-native-replacement.ps1`：当 native app-server 因 API-key 主认证拒绝手机远控时，在指定工作目录下构建 patched `app\resources\codex.exe` replacement。默认从安装包副本自动识别原生版本；内置映射为在 Desktop `26.707.3748.0` 上完成构建/安装/手机消息往返验证的 `0.144.0-alpha.4`，以及仅通过 patch-apply 验证的历史 `0.142.4`。其他版本必须提供严格匹配的 `-CodexSourceRef`、`-AppServerVersion` 和已验证的 `-PatchPathOverride`。
 - `scripts/install-computer-use-local.ps1`：Windows Computer Use 本地兼容文件安装和校验参考实现。
 - `scripts/sync-codex-provider-history.ps1`：同步本地会话 provider 元数据，让切换 `model_provider` 后消失的会话重新出现在官方列表中；也可用 `-RepairMissingCwdDirs` 修复恢复后会话无法继续的缺失 `cwd` 目录。默认不改 `config.toml`，也不改 workspace/project roots。
 - `scripts/install-model-instructions-file.ps1`：可选安装内置 `model_instructions_file` 提示词资源。
@@ -49,6 +49,7 @@
 - `references/restriction-debug-cases.md`：限制解除、Chrome/browser_use、Computer Use 和 Fast Mode 的按需诊断案例。
 - `references/remote-control-debug-cases.md`：手机远控配对、隔离授权、native app-server 网络、版本过期状态和配对后 API 地址诊断案例。
 - `references/remote-control-native-replacement.patch`：手机远控 native app-server replacement 使用的 Rust 源码参考补丁。
+- `references/remote-control-native-replacement-0.142.4.patch`：历史 `rust-v0.142.4` 专用、仅通过 clean patch-apply 验证的 Rust 源码补丁；不得描述为完整编译或端到端验证。
 
 ## 安装
 
@@ -115,7 +116,7 @@ Copy-Item -Recurse -Force -LiteralPath (Join-Path $source 'assets') -Destination
 
 外部执行器开始前先确认没有全局 `CODEX_HOME`。不要把 `.codex` 复制或迁移到 `.codex-cli`，不要提交或展示 `auth.json`、API key、OAuth token、MCP 凭据、浏览器资料或其它本地凭据。建议顺序是：先用 `scripts\manage-codex-backups.ps1 -Action Backup` 备份 Desktop 状态，再做只读检查和日志判断；需要 MSIX / ASAR 修复时先跑对应脚本的 `-DryRun`，只有 dry run 找到并验证目标后再运行安装路径，例如 `repatch-codex-windows.ps1` 或 targeted `*-windows-msix.ps1 -Install -Launch -InstallPrerequisites`。
 
-手机远控安装路径会在缺少 `makeappx.exe` / `signtool.exe` 时从 NuGet 下载 Windows SDK BuildTools。默认不强制使用本地代理；如果机器必须走代理，再显式传 `-BuildToolsProxy "http://127.0.0.1:10808"` 或设置 `CODEX_WINDOWS_SDK_BUILDTOOLS_PROXY`。如果遇到 `curl download failed with exit code 7`，先确认是否传了一个未监听的本地代理。
+手机远控安装路径会在缺少 `makeappx.exe` / `signtool.exe` 时从 NuGet 下载 Windows SDK BuildTools，并把缓存放在 `-OutputRoot\.remote-control-temp`，不会在已指定 D 盘输出根时回落到 `%TEMP%`。默认不强制使用本地代理；如果机器必须走代理，再显式传 `-BuildToolsProxy "http://127.0.0.1:10808"` 或设置 `CODEX_WINDOWS_SDK_BUILDTOOLS_PROXY`。日志不会打印代理 URI 或凭据。如果遇到 `curl download failed with exit code 7`，先确认是否传了一个未监听的本地代理。
 
 一个典型请求是：
 

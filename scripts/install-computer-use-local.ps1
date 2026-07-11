@@ -1097,9 +1097,44 @@ function Test-BundledMarketplaceMirror {
     $localEntries[[string]$entry.name] = $entry
   }
 
+  $installedPackage = Get-AppxPackage -Name 'OpenAI.Codex' -ErrorAction SilentlyContinue |
+    Sort-Object Version -Descending |
+    Select-Object -First 1
+  $allowedRuntimeOmissions = @{}
+  if ($installedPackage -and [string]$installedPackage.Version -eq '26.707.3748.0') {
+    $allowedRuntimeOmissions['deep-research'] = $true
+  }
+
   foreach ($sourceEntry in @($sourceManifest.plugins)) {
     $name = [string]$sourceEntry.name
     if (-not $localEntries.ContainsKey($name)) {
+      $sourceRelativePath = ([string]$sourceEntry.source.path) -replace '^[.][\/]', ''
+      $sourcePluginJson = Join-Path (Join-Path $sourceRoot $sourceRelativePath) '.codex-plugin\plugin.json'
+      $localPluginRoot = Join-Path $MarketplaceRoot $sourceRelativePath
+      $sourcePluginComplete = Test-Path -LiteralPath $sourcePluginJson -PathType Leaf
+      if ($name -eq 'deep-research' -and $installedPackage -and [string]$installedPackage.Version -eq '26.707.3748.0') {
+        $requiredSourceFiles = @(
+          '.codex-plugin\plugin.json',
+          'assets\deep-research.svg',
+          'skills\deep-research\SKILL.md',
+          'skills\deep-research\agents\openai.yaml',
+          'skills\deep-research\references\report-contract.md',
+          'skills\deep-research\references\research-method.md'
+        )
+        $sourcePluginComplete = @(
+          $requiredSourceFiles | Where-Object {
+            -not (Test-Path -LiteralPath (Join-Path (Join-Path $sourceRoot $sourceRelativePath) $_) -PathType Leaf)
+          }
+        ).Count -eq 0
+      }
+      if (
+        $allowedRuntimeOmissions.ContainsKey($name) -and
+        $sourcePluginComplete -and
+        -not (Test-Path -LiteralPath $localPluginRoot)
+      ) {
+        Write-Log "warning: installed optional bundled plugin was omitted by Desktop runtime reconciliation: $name"
+        continue
+      }
       throw "local openai-bundled marketplace is missing installed plugin entry: $name"
     }
 
