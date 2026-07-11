@@ -8,7 +8,7 @@ This is the public version of the `codex-windows-fast-patch` skill. It helps Age
 
 Use this skill when Windows Codex Desktop updates cause issues like these:
 
-- Diagnose and repair Model Experience issues as one workflow: Fast Mode / Priority being hidden or ineffective, models returned by the CLI or a custom provider's `/v1/models` endpoint remaining hidden by Statsig `available_models`, and the blue-purple Power slider falling back to the legacy picker after Sol/Terra are filtered out. The script checks the Fast request gate, Fast UI gate, and model allow-list independently and repairs only the broken parts. The default model allow-list includes `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`.
+- Fix missing Fast Mode, gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna models, and the blue-purple Power slider.
 - Repair the UI language resetting to English after restart.
 - Repair plugin entries, plugin install buttons, and plugin marketplace lists.
 - Repair the in-app browser, browser pane, Chrome, or browser_use when they are unavailable.
