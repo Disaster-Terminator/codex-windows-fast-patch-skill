@@ -9,6 +9,7 @@
 如果你的 Windows Codex Desktop 更新后出现下面这些问题，可以让 agent 使用这个 skill：
 
 - 修复 Fast Mode / Priority 模式不显示、不可选、开启后不生效的问题。
+- 修复 CLI 或 Custom Provider 的 `/v1/models` 已经返回新模型，但 Codex Desktop 仍被 Statsig `available_models` 旧白名单过滤的问题；默认支持显示 `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`，并恢复依赖 Sol/Terra 推理档位的蓝紫色 Power 拖动条。
 - 修复 Codex 重启后界面语言又变回英文的问题。
 - 修复插件入口、插件安装按钮、插件市场列表不可用的问题。
 - 修复内置浏览器、浏览器面板、Chrome / browser_use 不可用的问题。

@@ -9,6 +9,7 @@ This is the public version of the `codex-windows-fast-patch` skill. It helps Age
 Use this skill when Windows Codex Desktop updates cause issues like these:
 
 - Repair Fast Mode / Priority Mode when it is hidden, disabled, or does not actually take effect.
+- Repair new models that are returned by the CLI or a custom provider's `/v1/models` endpoint but remain hidden by the Desktop Statsig `available_models` filter. The default allow-list includes `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`, and restoring the Sol/Terra reasoning combinations also restores the dependent blue-purple Power slider.
 - Repair the UI language resetting to English after restart.
 - Repair plugin entries, plugin install buttons, and plugin marketplace lists.
 - Repair the in-app browser, browser pane, Chrome, or browser_use when they are unavailable.
