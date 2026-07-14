@@ -104,6 +104,8 @@ Checks:
 - If the log says `reason=local-patched`, the Desktop availability gate is open; continue by checking the Chrome extension, native host manifest, and plugin cache.
 - If the log still says `statsig-disabled`, re-extract the ASAR and inspect targets for `featureName:\`browser_use_external\``, `featureName:\`browser_use\``, `browser-sidebar-availability-*.js`, `browser_use_availability_resolved`, and `.vite\build\main-*.js`.
 - In Codex 26.707.3748.0, inspect whether the sender object includes `findShortcuts` between `externalBrowserUseAllowed` and `computerUse`. The patcher must preserve that field instead of requiring those fields to be adjacent.
+- In Codex 26.707.8479.0, the Electron receiver can compute the Windows override with parameterized minified variables instead of the older fixed `i` platform variable. Match the `CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE` conditional by structure and preserve its Computer Use behavior while adding the browser-use overrides.
+- In Codex 26.707.8479.0, the plugin page can insert workspace/account-derived assignments between the `authMethod` hook and the auth-blocked variable. Use the subsequent `kind===\`manage\`` route assignment as a bounded structural anchor instead of requiring the blocked call to be adjacent to `authMethod`.
 - Check the native messaging host manifest at `%LOCALAPPDATA%\OpenAI\extension\com.openai.codexextension.json` and the registry key `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.openai.codexextension`.
 - Check that `codex plugin list` reports `chrome@openai-bundled` as `installed, enabled`, and that the cached plugin path under `%USERPROFILE%\.codex\plugins\cache\openai-bundled\chrome` exists.
 
@@ -141,6 +143,8 @@ Action:
 - Restart Codex Desktop.
 - Confirm the latest Desktop log ends with `computer-use native pipe startup ready`.
 - If `-StrictVerifyOnly` fails because `plugins\cache\openai-bundled\computer-use\latest\.codex-plugin\plugin.json` is missing, run `-VerifyOnly` once to rebuild the cached plugin and `latest` link, then rerun `-StrictVerifyOnly`.
+- In Codex 26.707.8479.0, the Computer Use install-flow gate can move to `plugin-detail-page-utils-*.js`, where the install operation is identified by the `install-plugin` RPC rather than a literal `installPlugin:async` property. Use `openPluginInstall` plus the three-entry `.available` tuple to locate the gate.
+- In Codex 26.707.8479.0, the main bundle can ship a native Windows copy path through `copyDirectoryAllowDecryptedDestinationOnEncryptionFailure` in `windows-file-copy-*.js`. Do not inject the legacy byte-stream fallback when this helper is present; only patch the separate `sites` descriptor availability if it remains gated.
 - If Desktop logs show `not_in_bundled_marketplace_plugin_names` uninstalling `sites@openai-bundled`, inspect whether bundled descriptor filtering dropped `sites` because `features.sites` is false. Use the targeted bundled marketplace copy patch; do not run the phone remote-control workflow or a broad MSIX repatch for this symptom alone.
 - Escalate to the MSIX workflow only if local repair succeeds but logs or extracted ASAR checks still show settings/UI availability gates are blocking Computer Use or browser_use, such as `browser_use_availability_resolved` with `reason=statsig-disabled` or Computer Use/Any App disabled by a Desktop gate.
 

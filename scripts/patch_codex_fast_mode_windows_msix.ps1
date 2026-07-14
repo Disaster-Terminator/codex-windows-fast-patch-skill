@@ -702,12 +702,19 @@ function patchPluginPageAuth(file) {
     process.stderr.write('plugin-page-auth-target-not-found\n');
     process.exit(2);
   }
-  if (/\{authMethod:[A-Za-z_$][\w$]*\}=[A-Za-z_$][\w$]*\(\),(?:\{data:[A-Za-z_$][\w$]*\}=[A-Za-z_$][\w$]*\(\),)?[A-Za-z_$][\w$]*=!1,/.test(text)) return;
+  const migratedPatchedRe = /\{authMethod:[A-Za-z_$][\w$]*\}=[A-Za-z_$][\w$]*\(\),[^;]{0,2500}?[A-Za-z_$][\w$]*=!1,[A-Za-z_$][\w$]*=[A-Za-z_$][\w$]*\.kind===`manage`,/;
+  if (/\{authMethod:[A-Za-z_$][\w$]*\}=[A-Za-z_$][\w$]*\(\),(?:\{data:[A-Za-z_$][\w$]*\}=[A-Za-z_$][\w$]*\(\),)?[A-Za-z_$][\w$]*=!1,/.test(text) || migratedPatchedRe.test(text)) return;
 
   const originalRe = /\{authMethod:([A-Za-z_$][\w$]*)\}=([A-Za-z_$][\w$]*)\(\),((?:\{data:[A-Za-z_$][\w$]*\}=[A-Za-z_$][\w$]*\(\),)?)([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(\1\),/;
-  const next = text.replace(originalRe, (_match, authMethodVar, authHook, middle, blockedVar) =>
+  let next = text.replace(originalRe, (_match, authMethodVar, authHook, middle, blockedVar) =>
     `{authMethod:${authMethodVar}}=${authHook}(),${middle}${blockedVar}=!1,`
   );
+  if (next === text) {
+    const migratedOriginalRe = /\{authMethod:([A-Za-z_$][\w$]*)\}=([A-Za-z_$][\w$]*)\(\),([^;]{0,2500}?)([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(\1\),([A-Za-z_$][\w$]*=[A-Za-z_$][\w$]*\.kind===`manage`,)/;
+    next = text.replace(migratedOriginalRe, (_match, authMethodVar, authHook, middle, blockedVar, _blockedHook, tail) =>
+      `{authMethod:${authMethodVar}}=${authHook}(),${middle}${blockedVar}=!1,${tail}`
+    );
+  }
   if (next === text) {
     process.stderr.write('plugin-page-auth-patch-target-not-found\n');
     process.exit(2);
@@ -850,7 +857,8 @@ function patchComputerUseAvailability(file) {
 
 function patchComputerUseInstallFlow(file) {
   const before = read(file);
-  if (!before.includes('openPluginInstall') || !before.includes('installPlugin:async')) {
+  if (!before.includes('openPluginInstall') ||
+      (!before.includes('installPlugin:async') && !before.includes('install-plugin'))) {
     process.stderr.write('computer-use-install-flow-target-not-found\n');
     process.exit(2);
   }
@@ -1040,7 +1048,7 @@ function patchDesktopFeatureSender(file) {
 function patchDesktopFeatureMain(file) {
   const before = read(file);
   const patchedMainFragment = 'browserPane:!0,inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0';
-  const envGatePattern = /[A-Za-z_$][\w$]*=i===`win32`&&[A-Za-z_$][\w$]*\.CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE===`1`\?\{\.\.\.[A-Za-z_$][\w$]*,computerUse:!0,computerUseNodeRepl:!0\}:[A-Za-z_$][\w$]*/;
+  const envGatePattern = /([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)===`win32`&&([A-Za-z_$][\w$]*)\.CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE===`1`\?\{\.\.\.([A-Za-z_$][\w$]*),computerUse:!0,computerUseNodeRepl:!0\}:\4/;
   if (!before.includes(patchedMainFragment) &&
       (!before.includes('CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE') ||
        (!envGatePattern.test(before) &&
@@ -1050,8 +1058,8 @@ function patchDesktopFeatureMain(file) {
   }
 
   let after = before.replace(
-    /([A-Za-z_$][\w$]*)=i===`win32`&&r\.CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE===`1`\?\{\.\.\.([A-Za-z_$][\w$]*),computerUse:!0,computerUseNodeRepl:!0\}:\2/,
-    '$1=i===`win32`?{...$2,browserPane:!0,inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0,...r.CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE===`1`?{computerUse:!0,computerUseNodeRepl:!0}:{}}:$2'
+    envGatePattern,
+    '$1=$2===`win32`?{...$4,browserPane:!0,inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0,...$3.CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE===`1`?{computerUse:!0,computerUseNodeRepl:!0}:{}}:$4'
   );
   after = after.replace(
     /inAppBrowserUse:[A-Za-z_$][\w$]*\.inAppBrowserUse,inAppBrowserUseAllowed:[A-Za-z_$][\w$]*\.inAppBrowserUseAllowed,browserPane:[A-Za-z_$][\w$]*\.browserPane,externalBrowserUse:[A-Za-z_$][\w$]*\.externalBrowserUse,externalBrowserUseAllowed:[A-Za-z_$][\w$]*\.externalBrowserUseAllowed,computerUse:/,
@@ -1084,7 +1092,11 @@ const sitesPatchedMarker = 'codex_windows_sites_bundled_plugin_available';
 let after = text;
 let changed = false;
 
-if (!after.includes(copyPatchedMarker)) {
+const hasNativeWindowsCopyFallback =
+  after.includes('copyDirectoryAllowDecryptedDestinationOnEncryptionFailure') &&
+  after.includes('windows-file-copy-');
+
+if (!after.includes(copyPatchedMarker) && !hasNativeWindowsCopyFallback) {
   const originalRe = /async function ([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{if\(([A-Za-z_$][\w$]*)\.default\.platform===`darwin`\)\{await ([A-Za-z_$][\w$]*)\(`ditto`,\[`--noqtn`,\2,\3\]\);return\}await ([A-Za-z_$][\w$]*)\.default\.cp\(\2,\3,\{recursive:!0,verbatimSymlinks:!0\}\)\}/;
   const match = after.match(originalRe);
   if (!match) {
@@ -1245,7 +1257,7 @@ function Find-PatchTargets {
     foreach ($candidate in $desktopFeatureMainCandidates) {
       $text = Get-Content -Raw -LiteralPath $candidate
       if ($text.Contains('CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE') -and
-          (($text -match '[A-Za-z_$][\w$]*=i===`win32`&&[A-Za-z_$][\w$]*\.CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE===`1`\?\{\.\.\.[A-Za-z_$][\w$]*,computerUse:!0,computerUseNodeRepl:!0\}:[A-Za-z_$][\w$]*') -or
+          (($text -match '([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)===`win32`&&([A-Za-z_$][\w$]*)\.CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE===`1`\?\{\.\.\.([A-Za-z_$][\w$]*),computerUse:!0,computerUseNodeRepl:!0\}:\4') -or
            ($text -match 'inAppBrowserUse:[A-Za-z_$][\w$]*\.inAppBrowserUse,inAppBrowserUseAllowed:[A-Za-z_$][\w$]*\.inAppBrowserUseAllowed,browserPane:[A-Za-z_$][\w$]*\.browserPane,externalBrowserUse:[A-Za-z_$][\w$]*\.externalBrowserUse,externalBrowserUseAllowed:[A-Za-z_$][\w$]*\.externalBrowserUseAllowed') -or
            $text.Contains('browserPane:!0,inAppBrowserUse:!0,inAppBrowserUseAllowed:!0,externalBrowserUse:!0,externalBrowserUseAllowed:!0'))) {
         $desktopFeatureMainTarget = $candidate
@@ -1262,7 +1274,9 @@ function Find-PatchTargets {
     if ($text.Contains('openPluginInstall') -and
         $text.Contains('authMethod:') -and
       (($text -match '\{authMethod:[A-Za-z_$][\w$]*\}=[A-Za-z_$][\w$]*\(\),(?:\{data:[A-Za-z_$][\w$]*\}=[A-Za-z_$][\w$]*\(\),)?[A-Za-z_$][\w$]*=[A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*\),') -or
-       ($text -match '\{authMethod:[A-Za-z_$][\w$]*\}=[A-Za-z_$][\w$]*\(\),(?:\{data:[A-Za-z_$][\w$]*\}=[A-Za-z_$][\w$]*\(\),)?[A-Za-z_$][\w$]*=!1,'))) {
+       ($text -match '\{authMethod:[A-Za-z_$][\w$]*\}=[A-Za-z_$][\w$]*\(\),(?:\{data:[A-Za-z_$][\w$]*\}=[A-Za-z_$][\w$]*\(\),)?[A-Za-z_$][\w$]*=!1,') -or
+       ($text -match '\{authMethod:([A-Za-z_$][\w$]*)\}=[A-Za-z_$][\w$]*\(\),[^;]{0,2500}?[A-Za-z_$][\w$]*=[A-Za-z_$][\w$]*\(\1\),[A-Za-z_$][\w$]*=[A-Za-z_$][\w$]*\.kind===`manage`,') -or
+       ($text -match '\{authMethod:[A-Za-z_$][\w$]*\}=[A-Za-z_$][\w$]*\(\),[^;]{0,2500}?[A-Za-z_$][\w$]*=!1,[A-Za-z_$][\w$]*=[A-Za-z_$][\w$]*\.kind===`manage`,'))) {
       $pluginPageAuthTarget = $candidate
       break
     }
@@ -1379,7 +1393,11 @@ function Find-PatchTargets {
     }
   }
   if ([string]::IsNullOrWhiteSpace($computerUseInstallFlowTarget)) {
-    foreach ($candidate in (Invoke-RgList $RgPath 'installPlugin:async' $assetsDir)) {
+    $computerUseInstallFlowCandidates = @(
+      Invoke-RgList $RgPath 'installPlugin:async' $assetsDir
+      Invoke-RgList $RgPath 'install-plugin' $assetsDir
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique
+    foreach ($candidate in $computerUseInstallFlowCandidates) {
       $text = Get-Content -Raw -LiteralPath $candidate
       if ($text.Contains('openPluginInstall') -and
           (($text -match '=[A-Za-z_$][\w$]*\.available,[A-Za-z_$][\w$]*=[A-Za-z_$][\w$]*\.available,[A-Za-z_$][\w$]*=[A-Za-z_$][\w$]*\.available,') -or
