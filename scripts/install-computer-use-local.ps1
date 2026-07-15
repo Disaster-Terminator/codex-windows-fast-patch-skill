@@ -10,6 +10,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $LogPrefix = '[codex-computer-use-local]'
 $script:ConfigBackupBeforeOverwrite = @{}
+$ScriptRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+. (Join-Path $ScriptRoot 'config-safe-write.ps1')
 
 function Write-Log {
   param([string]$Message)
@@ -63,6 +65,43 @@ function ConvertTo-JsonFile {
     [object]$Value
   )
   Write-Utf8NoBom $Path (($Value | ConvertTo-Json -Depth 30) + "`n")
+}
+
+function Test-JsonFile {
+  param([string]$Path)
+
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    throw "JSON file is missing: $Path"
+  }
+  $bytes = [System.IO.File]::ReadAllBytes($Path)
+  if ($bytes.Length -eq 0) {
+    throw "JSON file is empty: $Path"
+  }
+  if ([Array]::IndexOf($bytes, [byte]0) -ge 0) {
+    throw "JSON file contains NUL bytes: $Path"
+  }
+  $null = Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
+}
+
+function Backup-FileBeforeOverwrite {
+  param(
+    [string]$Path,
+    [string]$Reason = 'file-write'
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    return
+  }
+
+  $safeReason = ([string]$Reason -replace '[^A-Za-z0-9_.-]', '-').Trim('-')
+  if ([string]::IsNullOrWhiteSpace($safeReason)) {
+    $safeReason = 'file-write'
+  }
+
+  $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+  $backupPath = "$Path.$stamp.$safeReason.bak"
+  Copy-Item -LiteralPath $Path -Destination $backupPath -Force
+  Write-Log "backup before overwrite: $backupPath"
 }
 
 function Resolve-OrCreateDirectory {
@@ -246,7 +285,7 @@ function Set-TomlTable {
   }
 
   Backup-ConfigBeforeOverwrite $ConfigPath "set-$Header"
-  Write-Utf8NoBom $ConfigPath $content
+  Write-CodexConfigTomlSafely -Path $ConfigPath -Content $content
 }
 
 function Remove-TomlTableKeys {
@@ -290,7 +329,7 @@ function Remove-TomlTableKeys {
 
   Backup-ConfigBeforeOverwrite $ConfigPath $Reason
   $updated = $content.Remove($match.Index, $match.Length).Insert($match.Index, $rebuilt.ToString())
-  Write-Utf8NoBom $ConfigPath $updated
+  Write-CodexConfigTomlSafely -Path $ConfigPath -Content $updated
 }
 
 function Enable-UserEnvironment {
@@ -997,6 +1036,7 @@ function Get-PluginVersion {
     throw "missing plugin manifest: $pluginJson"
   }
 
+  Test-JsonFile $pluginJson
   $plugin = Get-Content -Raw -LiteralPath $pluginJson | ConvertFrom-Json
   $version = [string]$plugin.version
   if ([string]::IsNullOrWhiteSpace($version)) {

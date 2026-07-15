@@ -20,6 +20,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $LogPrefix = '[codex-windows-fast-patch]'
 $ScriptRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+. (Join-Path $ScriptRoot 'config-safe-write.ps1')
 if ([string]::IsNullOrWhiteSpace($PatchScript)) {
   $PatchScript = Join-Path $ScriptRoot 'patch_codex_fast_mode_windows_msix.ps1'
 }
@@ -145,7 +146,7 @@ function Set-TomlTable {
   }
 
   Backup-ConfigBeforeOverwrite $ConfigPath "set-$Header"
-  Write-Utf8NoBom $ConfigPath $content
+  Write-CodexConfigTomlSafely -Path $ConfigPath -Content $content
 }
 
 function Set-TomlTableValue {
@@ -198,7 +199,7 @@ function Set-TomlTableValue {
   }
 
   Backup-ConfigBeforeOverwrite $ConfigPath "set-$Header-$Key"
-  Write-Utf8NoBom $ConfigPath $content
+  Write-CodexConfigTomlSafely -Path $ConfigPath -Content $content
 }
 
 function Test-TomlSyntax {
