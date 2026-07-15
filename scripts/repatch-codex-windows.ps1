@@ -21,6 +21,10 @@ $ErrorActionPreference = 'Stop'
 $LogPrefix = '[codex-windows-fast-patch]'
 $ScriptRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 . (Join-Path $ScriptRoot 'config-safe-write.ps1')
+$WindowsPowerShellExe = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+if (-not (Test-Path -LiteralPath $WindowsPowerShellExe -PathType Leaf)) {
+  $WindowsPowerShellExe = 'powershell.exe'
+}
 if ([string]::IsNullOrWhiteSpace($PatchScript)) {
   $PatchScript = Join-Path $ScriptRoot 'patch_codex_fast_mode_windows_msix.ps1'
 }
@@ -275,7 +279,7 @@ function Invoke-ComputerUseInstaller {
   }
 
   Write-Log "Computer Use ${mode}: $Stage"
-  Invoke-Checked 'powershell' $args "Computer Use $mode failed"
+  Invoke-Checked $WindowsPowerShellExe $args "Computer Use $mode failed"
   $env:CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE = '1'
   Enable-ComputerUseFeature
 }
@@ -304,7 +308,7 @@ function Invoke-ModelInstructionsInstaller {
     $args += $ModelInstructionsDestination
   }
 
-  Invoke-Checked 'powershell' $args 'model instructions file install failed'
+  Invoke-Checked $WindowsPowerShellExe $args 'model instructions file install failed'
 }
 
 function Register-LocalMarketplace {
@@ -468,7 +472,7 @@ for ($patchAttempt = 1; $patchAttempt -le $maxPatchAttempts; $patchAttempt++) {
   }
   Write-Log "patch attempt $patchAttempt/$maxPatchAttempts source package: $($sourcePackage.PackageFullName) signature=$($sourcePackage.SignatureKind)"
 
-  Invoke-Checked 'powershell' (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PatchScript) + $patchArgs) 'Codex MSIX patch failed'
+  Invoke-Checked $WindowsPowerShellExe (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PatchScript) + $patchArgs) 'Codex MSIX patch failed'
 
   if (-not $SkipMarketplace) {
     Register-LocalMarketplace $MarketplacePath
@@ -510,7 +514,7 @@ if (-not $successfulSourcePackage) {
 }
 
 if ($InstallModelInstructionsFile) {
-  Invoke-Checked 'powershell' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $ModelInstructionsScript, '-PromptDestination', $ModelInstructionsDestination, '-VerifyOnly') 'model instructions file verification failed'
+  Invoke-Checked $WindowsPowerShellExe @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $ModelInstructionsScript, '-PromptDestination', $ModelInstructionsDestination, '-VerifyOnly') 'model instructions file verification failed'
 }
 
 if (-not $DryRun) {
