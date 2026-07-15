@@ -8,7 +8,7 @@ This is the public version of the `codex-windows-fast-patch` skill. It helps Age
 
 Use this skill when Windows Codex Desktop updates cause issues like these:
 
-- Fix missing Fast Mode, gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna models, and the blue-purple Power slider.
+- Fix missing Fast Mode UI and Ultra reasoning in API-key or hybrid mode, plus hidden gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna models and the blue-purple Power slider.
 - Repair the UI language resetting to English after restart.
 - Repair plugin entries, plugin install buttons, and plugin marketplace lists.
 - Repair the in-app browser, browser pane, Chrome, or browser_use when they are unavailable.
@@ -124,7 +124,8 @@ Phone remote-control example request: `Use the codex-windows-fast-patch skill to
 
 Expected verification after a full run:
 
-- The patch log includes `fast-mode UI patch result`, `locale i18n patch result`, and `browser-use gate patch result`, each as `patched` or `already-patched`.
+- The patch log includes `fast-mode UI patch result`, the Model Experience custom-model metadata result, `compact Power / Ultra patch result`, `locale i18n patch result`, and `browser-use gate patch result`, each as `patched` or `already-patched`.
+- Fast UI and Ultra should be visible in OAuth, API-key, and OAuth-login-with-third-party-routing hybrid modes. For configured custom models, the patch normalizes `max` to `ultra` and supplies local `priority` / Fast metadata when `serviceTiers` is empty, without editing the refreshable `models_cache.json`.
 - Fast Mode wire verification captures `service_tier=priority` in Codex Desktop's `/v1/responses` request.
 - `codex plugin list` shows `sites`, `browser`, `chrome`, `computer-use`, and `latex` from `openai-bundled` as `installed, enabled` when bundled plugins are part of the repair.
 - Desktop logs show the bundled marketplace retaining `pluginNames=["sites","browser","chrome","computer-use","latex"]` and no new `not_in_bundled_marketplace_plugin_names` entry for `sites`.
