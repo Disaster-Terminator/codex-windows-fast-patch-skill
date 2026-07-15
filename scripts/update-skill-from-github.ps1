@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-  [string]$Owner = 'chen0416ccc-cpu',
+  [string]$Owner = 'Disaster-Terminator',
   [string]$Repo = 'codex-windows-fast-patch-skill',
   [string]$Branch = 'main',
   [string]$SkillDir,
