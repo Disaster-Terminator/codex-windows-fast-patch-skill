@@ -5,6 +5,7 @@ param(
   [string[]]$Steps = @('Status', 'ComputerUseStrict'),
   [int]$DefaultTimeoutSeconds = 120,
   [int]$MsixDryRunTimeoutSeconds = 900,
+  [int]$FullRepatchTimeoutSeconds = 1800,
   [switch]$Force
 )
 
@@ -13,7 +14,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
   $OutputRoot = Join-Path $repoRoot 'artifacts\runs'
 }
-$validSteps = @('Status', 'Backup', 'ComputerUseStrict', 'ComputerUseRepairVerify', 'MsixDryRun', 'PatchDryRunKeepWork', 'FullRepatch', 'TrustLatestPatchedMsixSignerLocalMachine', 'RemoveCodexAppxAllUsers', 'InstallLatestPatchedMsix')
+$validSteps = @('Status', 'Backup', 'ComputerUseStrict', 'ComputerUseRepairVerify', 'MsixDryRun', 'PatchDryRunKeepWork', 'FullRepatch', 'FullRepatchSkipFastVerify', 'TrustLatestPatchedMsixSignerLocalMachine', 'RemoveCodexAppxAllUsers', 'InstallLatestPatchedMsix')
 $Steps = @(
   foreach ($step in $Steps) {
     foreach ($part in ([string]$step -split ',')) {
@@ -184,6 +185,17 @@ if ($pkg) {
 '@
       $results += Invoke-TracedCommand -Name $step -FilePath 'powershell.exe' -Arguments @('-NoProfile', '-Command', $script)
     }
+    'Backup' {
+      $results += Invoke-TracedCommand -Name $step -FilePath 'powershell.exe' -Arguments @(
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        (Join-Path $PSScriptRoot 'manage-codex-backups.ps1'),
+        '-Action',
+        'Backup'
+      )
+    }
     'ComputerUseStrict' {
       $results += Invoke-TracedCommand -Name $step -FilePath 'powershell.exe' -Arguments @(
         '-NoProfile',
@@ -234,6 +246,18 @@ if ($pkg) {
         'Bypass',
         '-File',
         (Join-Path $PSScriptRoot 'repatch-codex-windows.ps1')
+      )
+    }
+    'FullRepatchSkipFastVerify' {
+      $results += Invoke-TracedCommand -Name $step -FilePath 'powershell.exe' -TimeoutSeconds $FullRepatchTimeoutSeconds -Arguments @(
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        (Join-Path $PSScriptRoot 'repatch-codex-windows.ps1'),
+        '-SkipFastVerify',
+        '-SkipComputerUse',
+        '-SkipMarketplace'
       )
     }
     'InstallLatestPatchedMsix' {
