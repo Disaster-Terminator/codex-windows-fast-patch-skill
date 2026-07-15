@@ -43,7 +43,16 @@ if (Test-Path -LiteralPath $config -PathType Leaf) {
 }
 ```
 
-Do not proceed with a config write if the backup of an existing config fails. After writing, validate TOML syntax with `tomllib` when Python is available.
+Do not proceed with a config write if the backup of an existing config fails. Bundled scripts must write `config.toml` through `scripts\config-safe-write.ps1`: reject empty content, reject NUL bytes, write to a temporary file, validate the temporary file, replace the target, then validate the final target. If an existing `config.toml` contains NUL bytes, stop normal repair and restore a known-good backup first.
+
+If Codex cannot start because `config.toml` is corrupted, use the standalone restore helper from PowerShell outside Codex:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\skills\codex-windows-fast-patch\scripts\restore-latest-codex-config-backup.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\skills\codex-windows-fast-patch\scripts\restore-latest-codex-config-backup.ps1" -Apply
+```
+
+The first command is a dry run that selects the newest valid backup under `.codex\backups\config\`. The `-Apply` command backs up the current target, removes it even if it is NUL-corrupted, and restores the selected valid backup through the same safe writer.
 
 ## Workflow Selection
 
