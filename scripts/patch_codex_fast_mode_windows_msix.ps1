@@ -508,10 +508,11 @@ const text = fs.readFileSync(file, 'utf8');
 const legacyPatchedRe = /function L\(e\)\{let (\w+)=v\(x\),(\w+)=e\?\.hostId\?\?\1,\{data:(\w+)\}=d\(E,\2\);return \3\?\.requirements\?\.featureRequirements\?\.fast_mode!==!1\}/;
 const currentDirectPatchedRe = /featureRequirements\?\.fast_mode===!1;return!\w+\}/;
 const currentAsyncPatchedRe = /async function \w+\(\w+,\w+\)\{let \w+=await \w+\(\w+,\w+\);return\(await \w+\.query\.fetch\(\w+,\{authMethod:\w+,hostId:\w+\}\)\)\.requirements\?\.featureRequirements\?\.fast_mode!==!1\}/;
-const currentCachedAsyncPatchedRe = /return [^;]+\.query\.setData\([\s\S]*?\),\w+\.requirements\?\.featureRequirements\?\.fast_mode!==!1\}/;
+const currentCachedAsyncPatchedRe = /async function [$A-Za-z_][$\w]*\(([$A-Za-z_][$\w]*),([$A-Za-z_][$\w]*)\)\{let ([$A-Za-z_][$\w]*)=await [$A-Za-z_][$\w]*\(\1,\2\);if\(\3!==`chatgpt`\)return!0;let ([$A-Za-z_][$\w]*)=await [$A-Za-z_][$\w]*\(\2,\{priority:`critical`\}\);return \1\.query\.setData\([$A-Za-z_][$\w]*,\{authMethod:\3,hostId:\2\},\4\),\4\.requirements\?\.featureRequirements\?\.fast_mode!==!1\}/;
 const legacyOriginalRe = /function L\(e\)\{let (\w+)=v\(x\),(\w+)=e\?\.hostId\?\?\1,(\w+)=O\(\2\),\{data:(\w+)\}=d\(E,\2\);return!\(\3\?\.authMethod!==`chatgpt`\|\|\4\?\.requirements\?\.featureRequirements\?\.fast_mode===!1\)\}/;
 const currentDirectOriginalRe = /function (\w+)\(e\)\{let (\w+)=([^,;]+),(\w+)=e\?\.hostId\?\?\2,(\w+)=(\w+\(\4\)),\{data:(\w+)\}=(\w+\(\w+,\4\)),(\w+)=\7\?\.requirements\?\.featureRequirements\?\.fast_mode===!1;return!\(\5\?\.authMethod!==`chatgpt`\|\|\9\)\}/;
 const currentAsyncOriginalRe = /async function (\w+)\((\w+),(\w+)\)\{let (\w+)=await ([A-Za-z_$][\w$]*)\(\2,\3\);return \4===`chatgpt`\?\(await \2\.query\.fetch\(([A-Za-z_$][\w$]*),\{authMethod:\4,hostId:\3\}\)\)\.requirements\?\.featureRequirements\?\.fast_mode!==!1:!1\}/;
+const currentCachedAsyncOriginalRe = /async function [$A-Za-z_][$\w]*\(([$A-Za-z_][$\w]*),([$A-Za-z_][$\w]*)\)\{let ([$A-Za-z_][$\w]*)=await [$A-Za-z_][$\w]*\(\1,\2\);if\(\3!==`chatgpt`\)return!1;let ([$A-Za-z_][$\w]*)=await [$A-Za-z_][$\w]*\(\2,\{priority:`critical`\}\);return \1\.query\.setData\([$A-Za-z_][$\w]*,\{authMethod:\3,hostId:\2\},\4\),\4\.requirements\?\.featureRequirements\?\.fast_mode!==!1\}/;
 const currentSplitConditionRe = /if\((\w+)\?\.authMethod!==`chatgpt`\|\|(\w+)\)\{/;
 
 if (legacyPatchedRe.test(text) || currentAsyncPatchedRe.test(text) || currentCachedAsyncPatchedRe.test(text) || (currentDirectPatchedRe.test(text) && !legacyOriginalRe.test(text) && !currentDirectOriginalRe.test(text) && !currentSplitConditionRe.test(text))) {
@@ -540,6 +541,12 @@ if (!patched) {
   if (currentAsyncMatch) {
     const [, fn, hostManagerVar, hostIdVar, authMethodVar, authMethodFn, queryVar] = currentAsyncMatch;
     next = next.replace(currentAsyncOriginalRe, `async function ${fn}(${hostManagerVar},${hostIdVar}){let ${authMethodVar}=await ${authMethodFn}(${hostManagerVar},${hostIdVar});return(await ${hostManagerVar}.query.fetch(${queryVar},{authMethod:${authMethodVar},hostId:${hostIdVar}})).requirements?.featureRequirements?.fast_mode!==!1}`);
+    patched = true;
+  }
+
+  const currentCachedAsyncMatch = next.match(currentCachedAsyncOriginalRe);
+  if (currentCachedAsyncMatch) {
+    next = next.replace(currentCachedAsyncOriginalRe, (match) => match.replace('return!1;', 'return!0;'));
     patched = true;
   }
 
@@ -573,22 +580,28 @@ if (constantPatchedRe.test(text)) {
   process.exit(0);
 }
 
-const patchedRe = /let\{data:\w+,isPending:(\w+)\}=[A-Za-z_$][\w$]*\([^)]+\),(\w+)=!!\w+\?\.isLoading\|\|\1,(\w+)=!\2&&\w+!=null&&\w+\?\.requirements\?\.featureRequirements\?\.fast_mode!==!1/;
+const patchedRe = /let\{data:([$A-Za-z_][$\w]*),isPending:([$A-Za-z_][$\w]*)\}=[$A-Za-z_][$\w]*\([^)]+\),([$A-Za-z_][$\w]*)=!![$A-Za-z_][$\w]*\?\.isLoading\|\|\2,([$A-Za-z_][$\w]*)=!\3&&\(\1==null\|\|\1\?\.requirements\?\.featureRequirements\?\.fast_mode!==!1\)/;
 if (patchedRe.test(text)) {
   process.stdout.write('already-patched');
   process.exit(0);
 }
 
+const stalePatchedRe = /let\{data:([$A-Za-z_][$\w]*),isPending:([$A-Za-z_][$\w]*)\}=([$A-Za-z_][$\w]*\([^)]+\)),([$A-Za-z_][$\w]*)=!![$A-Za-z_][$\w]*\?\.isLoading\|\|\2,([$A-Za-z_][$\w]*)=!\4&&\1!=null&&\1\?\.requirements\?\.featureRequirements\?\.fast_mode!==!1/;
 const uiGateRe = /let\{data:(\w+),isPending:(\w+)\}=([A-Za-z_$][\w$]*\([^)]+\)),(\w+)=!!(\w+)\?\.isLoading\|\|(\w+)&&\2,(\w+)=\6&&!\4&&\1!=null&&\1\?\.requirements\?\.featureRequirements\?\.fast_mode!==!1/;
-const match = text.match(uiGateRe);
+const match = text.match(uiGateRe) ?? text.match(stalePatchedRe);
 if (!match) {
   process.stderr.write('fast-ui-patch-target-not-found\n');
   process.exit(2);
 }
 
-const [, dataVar, pendingVar, queryCall, loadingVar, authStateVar, chatgptOnlyVar, allowedVar] = match;
-const replacement = `let{data:${dataVar},isPending:${pendingVar}}=${queryCall},${loadingVar}=!!${authStateVar}?.isLoading||${pendingVar},${allowedVar}=!${loadingVar}&&${dataVar}!=null&&${dataVar}?.requirements?.featureRequirements?.fast_mode!==!1`;
-fs.writeFileSync(file, text.replace(uiGateRe, replacement));
+const [matched, dataVar, pendingVar, queryCall, loadingVar] = match;
+const allowedVar = match[7] ?? match[5];
+const authStateVar = match[5];
+const loadingExpression = match[7]
+  ? `!!${authStateVar}?.isLoading||${pendingVar}`
+  : matched.slice(matched.indexOf(`${loadingVar}=`) + loadingVar.length + 1, matched.indexOf(`,${allowedVar}=`));
+const replacement = `let{data:${dataVar},isPending:${pendingVar}}=${queryCall},${loadingVar}=${loadingExpression},${allowedVar}=!${loadingVar}&&(${dataVar}==null||${dataVar}?.requirements?.featureRequirements?.fast_mode!==!1)`;
+fs.writeFileSync(file, text.replace(match[0], replacement));
 process.stdout.write('patched');
 '@
 
@@ -601,29 +614,52 @@ if (models.length === 0) {
   process.exit(2);
 }
 
-const marker = 'CODEX_CUSTOM_MODELS_V1';
+const customModelsMarker = 'CODEX_CUSTOM_MODELS_V1';
+const ultraMarker = 'CODEX_ULTRA_REASONING_V1';
 const text = fs.readFileSync(file, 'utf8');
-if (text.includes(marker) && models.every((model) => text.includes(model))) {
+let next = text;
+let changed = false;
+
+if (!next.includes(customModelsMarker) || !models.every((model) => next.includes(model))) {
+  const visibilityRe = /if\(([$A-Za-z_][$\w]*)\?([$A-Za-z_][$\w]*)\.has\(([$A-Za-z_][$\w]*)\.model\):!\3\.hidden\)\{/;
+  const patchedVisibilityRe = /if\(\/\*CODEX_CUSTOM_MODELS_V1\*\/\[[^\]]*\]\.includes\(([$A-Za-z_][$\w]*)\.model\)\|\|\(([$A-Za-z_][$\w]*)\?([$A-Za-z_][$\w]*)\.has\(\1\.model\):!\1\.hidden\)\)\{/;
+  const forced = JSON.stringify(models);
+  const originalMatch = next.match(visibilityRe);
+  const patchedMatch = next.match(patchedVisibilityRe);
+  if (originalMatch) {
+    const replacement = `if(/*${customModelsMarker}*/${forced}.includes(${originalMatch[3]}.model)||(${originalMatch[1]}?${originalMatch[2]}.has(${originalMatch[3]}.model):!${originalMatch[3]}.hidden)){`;
+    next = next.replace(visibilityRe, replacement);
+  } else if (patchedMatch) {
+    const replacement = `if(/*${customModelsMarker}*/${forced}.includes(${patchedMatch[1]}.model)||(${patchedMatch[2]}?${patchedMatch[3]}.has(${patchedMatch[1]}.model):!${patchedMatch[1]}.hidden)){`;
+    next = next.replace(patchedVisibilityRe, replacement);
+  } else {
+    process.stderr.write('custom-model-visibility-target-not-found\n');
+    process.exit(2);
+  }
+  changed = true;
+}
+
+if (!next.includes(ultraMarker)) {
+  const ultraGateRe = /(function [$A-Za-z_][$\w]*\(\{[^{}]{0,800}?includeUltraReasoningEffort:([$A-Za-z_][$\w]*)[^{}]{0,800}?\}\)\{)(let )/;
+  const ultraMatch = next.match(ultraGateRe);
+  if (!ultraMatch) {
+    process.stderr.write('ultra-reasoning-gate-target-not-found\n');
+    process.exit(2);
+  }
+  next = next.replace(ultraGateRe, `$1/*${ultraMarker}*/${ultraMatch[2]}=!0;$3`);
+  changed = true;
+}
+
+if (!next.includes(customModelsMarker) || !models.every((model) => next.includes(model)) || !next.includes(ultraMarker)) {
+  process.stderr.write('model-experience-patch-verification-failed\n');
+  process.exit(2);
+}
+if (changed) {
+  fs.writeFileSync(file, next);
+  process.stdout.write('patched');
+} else {
   process.stdout.write('already-patched');
-  process.exit(0);
 }
-
-const visibilityRe = /if\(([$A-Za-z_][$\w]*)\?([$A-Za-z_][$\w]*)\.has\(([$A-Za-z_][$\w]*)\.model\):!\3\.hidden\)\{/;
-const match = text.match(visibilityRe);
-if (!match) {
-  process.stderr.write('custom-model-visibility-target-not-found\n');
-  process.exit(2);
-}
-
-const forced = JSON.stringify(models);
-const replacement = `if(/*${marker}*/${forced}.includes(${match[3]}.model)||(${match[1]}?${match[2]}.has(${match[3]}.model):!${match[3]}.hidden)){`;
-const next = text.replace(visibilityRe, replacement);
-if (!next.includes(marker) || !models.every((model) => next.includes(model))) {
-  process.stderr.write('custom-model-patch-verification-failed\n');
-  process.exit(2);
-}
-fs.writeFileSync(file, next);
-process.stdout.write('patched');
 '@
 
   Set-Content -LiteralPath $localePatcherPath -Encoding UTF8 -Value @'
@@ -1570,13 +1606,13 @@ function Invoke-PatchAppAsar {
     }
     Write-Log "Model Experience Fast Mode request target: $fastModeTarget"
     Write-Log "Model Experience Fast Mode UI target: $fastModeUiTarget"
-    Write-Log "Model Experience custom models target: $customModelsTarget"
+    Write-Log "Model Experience custom models / Ultra target: $customModelsTarget"
     $fastModeResult = Invoke-NodePatcher $nodePath $patchers.Fast @($fastModeTarget)
     Write-Log "Model Experience Fast Mode request result: $fastModeResult"
     $fastModeUiResult = Invoke-NodePatcher $nodePath $patchers.FastUi @($fastModeUiTarget)
     Write-Log "Model Experience Fast Mode UI result: $fastModeUiResult"
     $customModelsResult = Invoke-NodePatcher $nodePath $patchers.CustomModels (@($customModelsTarget) + @($CustomModels))
-    Write-Log "Model Experience custom models result: $customModelsResult ($($CustomModels -join ', '))"
+    Write-Log "Model Experience custom models / Ultra result: $customModelsResult ($($CustomModels -join ', '))"
     foreach ($syntaxTarget in @($fastModeTarget, $fastModeUiTarget, $customModelsTarget)) {
       & $nodePath --check $syntaxTarget
       if ($LASTEXITCODE -ne 0) {
@@ -1644,7 +1680,7 @@ function Invoke-PatchAppAsar {
   $fastUi = Invoke-NodePatcher $nodePath $patchers.FastUi @($targets.FastModeUi)
   Write-Log "fast-mode UI patch result: $fastUi"
   $customModels = Invoke-NodePatcher $nodePath $patchers.CustomModels (@($targets.CustomModels) + @($CustomModels))
-  Write-Log "custom models patch result: $customModels ($($CustomModels -join ', '))"
+  Write-Log "custom models / Ultra patch result: $customModels ($($CustomModels -join ', '))"
 
   $localeI18n = Invoke-NodePatcher $nodePath $patchers.LocaleI18n @($targets.LocaleI18n)
   Write-Log "locale i18n patch result: $localeI18n"
