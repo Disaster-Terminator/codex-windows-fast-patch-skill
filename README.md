@@ -8,7 +8,7 @@
 
 如果你的 Windows Codex Desktop 更新后出现下面这些问题，可以让 agent 使用这个 skill：
 
-- 修复Fast Mode、gpt-5.6-sol、gpt-5.6-terra、gpt-5.6-luna模型不显示，蓝紫色 Power 拖动条消失问题
+- 修复 API / 混合模式缺失 Fast Mode UI 和 Ultra 推理档位，以及 gpt-5.6-sol、gpt-5.6-terra、gpt-5.6-luna 模型或蓝紫色 Power 拖动条不显示的问题。
 - 修复 Codex 重启后界面语言又变回英文的问题。
 - 修复插件入口、插件安装按钮、插件市场列表不可用的问题。
 - 修复内置浏览器、浏览器面板、Chrome / browser_use 不可用的问题。
@@ -132,8 +132,9 @@ Copy-Item -Recurse -Force -LiteralPath (Join-Path $source 'assets') -Destination
 
 ## 预期验证
 
-- 补丁日志包含 `fast-mode UI patch result`、`locale i18n patch result` 和 `browser-use gate patch result`，结果为 `patched` 或 `already-patched`。
-- Fast Mode 本地线缆验证能在 `/v1/responses` 的 HTTP 请求体或 WebSocket 帧里捕获 `service_tier=priority`。
+- 补丁日志包含 `fast-mode UI patch result`、Model Experience 自定义模型元数据结果、`compact Power / Ultra patch result`、`locale i18n patch result` 和 `browser-use gate patch result`，结果为 `patched` 或 `already-patched`。
+- OAuth、纯 API 和 OAuth 登录加第三方模型路由的混合模式都应显示 Fast UI 与 Ultra。对于配置的自定义模型，补丁会在模型过滤边界把 `max` 规范化为 `ultra`，并在 `serviceTiers` 为空时补出本地 `priority` / Fast 元数据，而不是修改易被刷新的 `models_cache.json`。
+- Fast Mode 本地线缆验证能在 Codex Desktop 的 `/v1/responses` HTTP 请求体或 WebSocket 帧里捕获 `service_tier=priority`。
 - 如果本次修复包含 bundled 插件，`codex plugin list` 应显示 `openai-bundled` 下的 `sites`、`browser`、`chrome`、`computer-use`、`latex` 都为 `installed, enabled`。
 - Desktop 日志应显示 bundled marketplace 保留 `pluginNames=["sites","browser","chrome","computer-use","latex"]`，且不再出现新的 `not_in_bundled_marketplace_plugin_names` / `sites`。
 - 如果本次修复包含浏览器能力，Desktop 日志里 `browser_use_availability_resolved` 显示 `available=true` 和 `reason=local-patched`。
