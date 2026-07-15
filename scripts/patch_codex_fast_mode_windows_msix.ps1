@@ -1819,8 +1819,57 @@ function Get-ManifestPublisher {
   return $manifest.Package.Identity.Publisher
 }
 
+function Test-CertificateInStore {
+  param(
+    [string]$Thumbprint,
+    [System.Security.Cryptography.X509Certificates.StoreName]$StoreName,
+    [System.Security.Cryptography.X509Certificates.StoreLocation]$StoreLocation
+  )
+  $store = [System.Security.Cryptography.X509Certificates.X509Store]::new($StoreName, $StoreLocation)
+  try {
+    $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
+    return [bool](@($store.Certificates | Where-Object { $_.Thumbprint -eq $Thumbprint }).Count)
+  } finally {
+    $store.Close()
+  }
+}
+
 function Get-OrCreateSigningCertificate {
   param([string]$Publisher)
+
+  $myStore = [System.Security.Cryptography.X509Certificates.X509Store]::new(
+    [System.Security.Cryptography.X509Certificates.StoreName]::My,
+    [System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
+  )
+  try {
+    $myStore.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
+    $trustedCandidate = $myStore.Certificates |
+      Where-Object {
+        $_.Subject -eq $Publisher -and
+        $_.HasPrivateKey -and
+        $_.NotAfter -gt (Get-Date).AddDays(1) -and
+        (Test-CertificateInStore `
+          -Thumbprint $_.Thumbprint `
+          -StoreName ([System.Security.Cryptography.X509Certificates.StoreName]::Root) `
+          -StoreLocation ([System.Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine))
+      } |
+      Sort-Object NotAfter -Descending |
+      Select-Object -First 1
+  } finally {
+    $myStore.Close()
+  }
+
+  if ($trustedCandidate) {
+    Write-Log "reusing LocalMachine-trusted signing certificate: $($trustedCandidate.Thumbprint)"
+    return [pscustomobject]@{
+      Thumbprint = $trustedCandidate.Thumbprint
+      Source = 'CurrentUserStore'
+      PfxPath = $null
+      CerPath = $null
+      Password = $null
+    }
+  }
+
   Write-Log "creating file-backed signing certificate: $Publisher"
   $rsa = [System.Security.Cryptography.RSA]::Create(2048)
   $request = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
@@ -1853,6 +1902,7 @@ function Get-OrCreateSigningCertificate {
   [System.IO.File]::WriteAllBytes($cerPath, $certWithKey.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert))
   return [pscustomobject]@{
     Thumbprint = $certWithKey.Thumbprint
+    Source = 'File'
     PfxPath = $pfxPath
     CerPath = $cerPath
     Password = $password
@@ -1861,6 +1911,10 @@ function Get-OrCreateSigningCertificate {
 
 function Trust-SigningCertificate {
   param([psobject]$Cert)
+  if ($Cert.Source -eq 'CurrentUserStore') {
+    Write-Log "signing certificate already trusted for Appx install: $($Cert.Thumbprint)"
+    return
+  }
   Write-Log "trusting signing certificate: $($Cert.Thumbprint)"
   & certutil.exe -user -addstore Root $Cert.CerPath | Out-Null
   if ($LASTEXITCODE -ne 0) {
@@ -1896,23 +1950,32 @@ function Invoke-SignPackage {
   )
   Write-Log 'signing MSIX'
   try {
-    & $SignTool sign /fd SHA256 /f $Cert.PfxPath /p $Cert.Password $MsixPath
+    if ($Cert.Source -eq 'CurrentUserStore') {
+      & $SignTool sign /fd SHA256 /s My /sha1 $Cert.Thumbprint $MsixPath
+    } else {
+      & $SignTool sign /fd SHA256 /f $Cert.PfxPath /p $Cert.Password $MsixPath
+    }
     if ($LASTEXITCODE -ne 0) {
       Fail "signtool sign failed with exit code $LASTEXITCODE"
     }
   } finally {
-    Remove-Item -LiteralPath $Cert.PfxPath -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $Cert.CerPath -Force -ErrorAction SilentlyContinue
+    if (-not [string]::IsNullOrWhiteSpace($Cert.PfxPath)) {
+      Remove-Item -LiteralPath $Cert.PfxPath -Force -ErrorAction SilentlyContinue
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Cert.CerPath)) {
+      Remove-Item -LiteralPath $Cert.CerPath -Force -ErrorAction SilentlyContinue
+    }
   }
 }
 
 function Stop-CodexDesktopProcesses {
   param([string]$InstallLocation)
   $targetRoot = if ($InstallLocation) { $InstallLocation.TrimEnd('\') } else { $null }
-  $processes = Get-Process -Name 'Codex' -ErrorAction SilentlyContinue | Where-Object {
+  $processes = Get-Process -Name @('Codex', 'ChatGPT') -ErrorAction SilentlyContinue | Where-Object {
     $_.Path -and (
       ($targetRoot -and $_.Path.StartsWith($targetRoot, [StringComparison]::OrdinalIgnoreCase)) -or
-      $_.Path -like '*\WindowsApps\OpenAI.Codex_*\app\Codex.exe'
+      $_.Path -like '*\WindowsApps\OpenAI.Codex_*\app\Codex.exe' -or
+      $_.Path -like '*\WindowsApps\OpenAI.Codex_*\app\ChatGPT.exe'
     )
   }
   foreach ($p in $processes) {
@@ -1921,11 +1984,27 @@ function Stop-CodexDesktopProcesses {
   }
 }
 
+function Assert-MsixSignerTrustedForInstall {
+  param([string]$MsixPath)
+  $signer = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($MsixPath)
+  if ([string]::IsNullOrWhiteSpace($signer.Thumbprint)) {
+    Fail "could not read MSIX signer before install: $MsixPath"
+  }
+  if (-not (Test-CertificateInStore `
+      -Thumbprint $signer.Thumbprint `
+      -StoreName ([System.Security.Cryptography.X509Certificates.StoreName]::Root) `
+      -StoreLocation ([System.Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine))) {
+    Fail "MSIX signer $($signer.Thumbprint) is not trusted in LocalMachine\Root; refusing to remove the existing Codex package. Run trust-latest-patched-msix-signer-localmachine.ps1 -TrustRootForAppxInstallRecovery, then retry."
+  }
+  Write-Log "MSIX signer trusted for install: $($signer.Thumbprint)"
+}
+
 function Install-PatchedPackage {
   param(
     [string]$MsixPath,
     [string]$PackageFamilyName
   )
+  Assert-MsixSignerTrustedForInstall -MsixPath $MsixPath
   $existing = Get-AppxPackage -Name 'OpenAI.Codex' -ErrorAction SilentlyContinue | Select-Object -First 1
   if ($existing) {
     Stop-CodexDesktopProcesses $existing.InstallLocation

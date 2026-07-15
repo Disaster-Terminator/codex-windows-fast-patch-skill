@@ -325,6 +325,7 @@ Success criteria:
 ## Important Guardrails
 
 - The full MSIX install path removes the existing `OpenAI.Codex` package and installs a patched package. If run from inside Codex Desktop, the app can disappear or exit while the script continues. Use that path only when package-gated Desktop code must be patched; for local Chrome/Computer Use marketplace/cache/native-host/runtime failures, use the Computer Use Only workflow instead.
+- The MSIX patcher must reuse a valid CurrentUser signing certificate that is already trusted in `LocalMachine\Root` when one exists. Before removing the current package, it verifies the completed MSIX signer against `LocalMachine\Root` and fails without uninstalling when trust is missing. Do not weaken or bypass this pre-uninstall gate.
 - Do not modify `C:\Program Files\WindowsApps` in place. Use the MSIX repack script.
 - Do not run the phone remote-control MSIX patch as a default repatch side effect. Use it only for phone remote-control tasks or when the user explicitly asks for that workflow.
 - Do not treat every `missing field inputSchema` as an MCP problem. If CLI smoke tests pass while Desktop UI fails and the dynamic-tools ASAR asset still returns a namespace wrapper, use the Dynamic Tools Schema workflow instead of disabling unrelated MCP servers.
