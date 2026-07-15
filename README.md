@@ -132,8 +132,8 @@ Copy-Item -Recurse -Force -LiteralPath (Join-Path $source 'assets') -Destination
 
 ## 预期验证
 
-- 补丁日志包含 `fast-mode UI patch result`、Model Experience 自定义模型 / Ultra 结果、`locale i18n patch result` 和 `browser-use gate patch result`，结果为 `patched` 或 `already-patched`。
-- OAuth、纯 API 和 OAuth 登录加第三方模型路由的混合模式都应显示 Fast UI；模型元数据本身包含 `ultra` 时，三种模式都应显示 Ultra。
+- 补丁日志包含 `fast-mode UI patch result`、Model Experience 自定义模型元数据结果、`compact Power / Ultra patch result`、`locale i18n patch result` 和 `browser-use gate patch result`，结果为 `patched` 或 `already-patched`。
+- OAuth、纯 API 和 OAuth 登录加第三方模型路由的混合模式都应显示 Fast UI 与 Ultra。对于配置的自定义模型，补丁会在模型过滤边界把 `max` 规范化为 `ultra`，并在 `serviceTiers` 为空时补出本地 `priority` / Fast 元数据，而不是修改易被刷新的 `models_cache.json`。
 - Fast Mode 线缆验证能在 Codex Desktop 的 `/v1/responses` 请求里捕获 `service_tier=priority`。
 - 如果本次修复包含 bundled 插件，`codex plugin list` 应显示 `openai-bundled` 下的 `sites`、`browser`、`chrome`、`computer-use`、`latex` 都为 `installed, enabled`。
 - Desktop 日志应显示 bundled marketplace 保留 `pluginNames=["sites","browser","chrome","computer-use","latex"]`，且不再出现新的 `not_in_bundled_marketplace_plugin_names` / `sites`。

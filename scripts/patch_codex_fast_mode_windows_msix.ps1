@@ -493,6 +493,7 @@ function Write-PatcherFiles {
   $fastPatcherPath = Join-Path $WorkDir 'PatchFastMode.cjs'
   $fastUiPatcherPath = Join-Path $WorkDir 'PatchFastModeUi.cjs'
   $customModelsPatcherPath = Join-Path $WorkDir 'PatchCustomModels.cjs'
+  $modelPickerPatcherPath = Join-Path $WorkDir 'PatchModelPicker.cjs'
   $localePatcherPath = Join-Path $WorkDir 'PatchLocaleI18n.cjs'
   $pluginsPatcherPath = Join-Path $WorkDir 'PatchPlugins.cjs'
   $goalPatcherPath = Join-Path $WorkDir 'PatchGoal.cjs'
@@ -615,15 +616,17 @@ if (models.length === 0) {
 }
 
 const customModelsMarker = 'CODEX_CUSTOM_MODELS_V1';
-const ultraMarker = 'CODEX_ULTRA_REASONING_V1';
+const metadataStartMarker = 'CODEX_CUSTOM_MODEL_METADATA_V2_START';
+const metadataEndMarker = 'CODEX_CUSTOM_MODEL_METADATA_V2_END';
+const legacyUltraMarker = 'CODEX_ULTRA_REASONING_V1';
 const text = fs.readFileSync(file, 'utf8');
 let next = text;
 let changed = false;
+const forced = JSON.stringify(models);
 
-if (!next.includes(customModelsMarker) || !models.every((model) => next.includes(model))) {
+if (!next.includes(`/*${customModelsMarker}*/${forced}.includes(`)) {
   const visibilityRe = /if\(([$A-Za-z_][$\w]*)\?([$A-Za-z_][$\w]*)\.has\(([$A-Za-z_][$\w]*)\.model\):!\3\.hidden\)\{/;
   const patchedVisibilityRe = /if\(\/\*CODEX_CUSTOM_MODELS_V1\*\/\[[^\]]*\]\.includes\(([$A-Za-z_][$\w]*)\.model\)\|\|\(([$A-Za-z_][$\w]*)\?([$A-Za-z_][$\w]*)\.has\(\1\.model\):!\1\.hidden\)\)\{/;
-  const forced = JSON.stringify(models);
   const originalMatch = next.match(visibilityRe);
   const patchedMatch = next.match(patchedVisibilityRe);
   if (originalMatch) {
@@ -639,19 +642,95 @@ if (!next.includes(customModelsMarker) || !models.every((model) => next.includes
   changed = true;
 }
 
-if (!next.includes(ultraMarker)) {
-  const ultraGateRe = /(function [$A-Za-z_][$\w]*\(\{[^{}]{0,800}?includeUltraReasoningEffort:([$A-Za-z_][$\w]*)[^{}]{0,800}?\}\)\{)(let )/;
-  const ultraMatch = next.match(ultraGateRe);
-  if (!ultraMatch) {
-    process.stderr.write('ultra-reasoning-gate-target-not-found\n');
-    process.exit(2);
+const functionHeaderRe = /function [$A-Za-z_][$\w]*\(\{([^{}]{0,1600})\}\)\{/g;
+let modelFilterMatch = null;
+for (const match of next.matchAll(functionHeaderRe)) {
+  if (match[1].includes('includeUltraReasoningEffort:') && match[1].includes('models:')) {
+    modelFilterMatch = match;
+    break;
   }
-  next = next.replace(ultraGateRe, `$1/*${ultraMarker}*/${ultraMatch[2]}=!0;$3`);
+}
+if (!modelFilterMatch) {
+  process.stderr.write('custom-model-metadata-target-not-found\n');
+  process.exit(2);
+}
+const signature = modelFilterMatch[1];
+const enabledEffortsVar = signature.match(/enabledReasoningEfforts:([$A-Za-z_][$\w]*)/)?.[1];
+const ultraVar = signature.match(/includeUltraReasoningEffort:([$A-Za-z_][$\w]*)/)?.[1];
+const modelsVar = signature.match(/models:([$A-Za-z_][$\w]*)/)?.[1];
+if (!enabledEffortsVar || !ultraVar || !modelsVar) {
+  process.stderr.write('custom-model-metadata-variables-not-found\n');
+  process.exit(2);
+}
+const metadataBlock = `/*${metadataStartMarker}*/${ultraVar}=!0;${enabledEffortsVar}=new Set(${enabledEffortsVar});${enabledEffortsVar}.add(\`ultra\`);${modelsVar}=${modelsVar}.map(e=>{if(!${forced}.includes(e.model))return e;let t=e.supportedReasoningEfforts??[],n=t.some(({reasoningEffort:e})=>e===\`ultra\`),r=n?t.filter(({reasoningEffort:e})=>e!==\`max\`):t.map(e=>e.reasoningEffort===\`max\`?{...e,reasoningEffort:\`ultra\`}:e),i=e.serviceTiers?.length?e.serviceTiers:[{id:\`priority\`,name:\`Fast\`,description:\`1.5x speed, increased usage\`}];return{...e,supportedReasoningEfforts:r,serviceTiers:i}});/*${metadataEndMarker}*/`;
+const metadataBlockRe = /\/\*CODEX_CUSTOM_MODEL_METADATA_V2_START\*\/[\s\S]*?\/\*CODEX_CUSTOM_MODEL_METADATA_V2_END\*\//;
+const currentMetadataMatch = next.match(metadataBlockRe);
+if (currentMetadataMatch) {
+  if (currentMetadataMatch[0] !== metadataBlock) {
+    next = next.replace(metadataBlockRe, metadataBlock);
+    changed = true;
+  }
+} else {
+  const bodyStart = modelFilterMatch.index + modelFilterMatch[0].length;
+  const legacyPrefixRe = new RegExp(`^\\/\\*${legacyUltraMarker}\\*\\/[$A-Za-z_][$\\w]*=!0;`);
+  const bodyTail = next.slice(bodyStart);
+  const legacyPrefix = bodyTail.match(legacyPrefixRe)?.[0] ?? '';
+  next = next.slice(0, bodyStart) + metadataBlock + bodyTail.slice(legacyPrefix.length);
   changed = true;
 }
 
-if (!next.includes(customModelsMarker) || !models.every((model) => next.includes(model)) || !next.includes(ultraMarker)) {
+if (!next.includes(`/*${customModelsMarker}*/${forced}.includes(`) ||
+    !next.includes(metadataStartMarker) ||
+    !next.includes(metadataEndMarker) ||
+    !next.includes('serviceTiers:i') ||
+    !next.includes('reasoningEffort:`ultra`')) {
   process.stderr.write('model-experience-patch-verification-failed\n');
+  process.exit(2);
+}
+if (changed) {
+  fs.writeFileSync(file, next);
+  process.stdout.write('patched');
+} else {
+  process.stdout.write('already-patched');
+}
+'@
+
+  Set-Content -LiteralPath $modelPickerPatcherPath -Encoding UTF8 -Value @'
+const fs = require('node:fs');
+const file = process.argv[2];
+const workAccessMarker = 'CODEX_WORK_MODE_ACCESS_V1';
+const ultraSliderMarker = 'CODEX_ULTRA_SLIDER_V1';
+const text = fs.readFileSync(file, 'utf8');
+let next = text;
+let changed = false;
+
+if (!next.includes(workAccessMarker)) {
+  const workAccessRe = /(function [$A-Za-z_][$\w]*\(\{harborEnabled:([$A-Za-z_][$\w]*),isElectron:([$A-Za-z_][$\w]*),isEverydayWorkMode:([$A-Za-z_][$\w]*)\}\)\{)return \4\|\|\3&&\2\}/;
+  const alreadyOpenRe = /(function [$A-Za-z_][$\w]*\(\{harborEnabled:([$A-Za-z_][$\w]*),isElectron:([$A-Za-z_][$\w]*),isEverydayWorkMode:([$A-Za-z_][$\w]*)\}\)\{)return \3\|\|\4\}/;
+  const workAccessMatch = next.match(workAccessRe) ?? next.match(alreadyOpenRe);
+  if (!workAccessMatch) {
+    process.stderr.write('work-mode-access-target-not-found\n');
+    process.exit(2);
+  }
+  next = next.replace(workAccessMatch[0], `${workAccessMatch[1]}/*${workAccessMarker}*/return ${workAccessMatch[3]}||${workAccessMatch[4]}}`);
+  changed = true;
+}
+
+if (!next.includes(ultraSliderMarker)) {
+  const ultraSliderRe = /function ([$A-Za-z_][$\w]*)\(([$A-Za-z_][$\w]*),([$A-Za-z_][$\w]*)=!1\)\{let ([$A-Za-z_][$\w]*)=([$A-Za-z_][$\w]*)\(\3\?\[\.\.\.([$A-Za-z_][$\w]*),([$A-Za-z_][$\w]*)\]:\6,\2\);if\(\4\.length>=4\)return \4;/;
+  const ultraSliderMatch = next.match(ultraSliderRe);
+  if (!ultraSliderMatch) {
+    process.stderr.write('ultra-slider-target-not-found\n');
+    process.exit(2);
+  }
+  const [, fn, modelsArg, flagArg, resultVar, filterFn, baseSelections, ultraSelection] = ultraSliderMatch;
+  const replacement = `function ${fn}(${modelsArg},${flagArg}=!1){/*${ultraSliderMarker}*/let ${resultVar}=${filterFn}([...${baseSelections},${ultraSelection}],${modelsArg});if(${resultVar}.length>=4)return ${resultVar};`;
+  next = next.replace(ultraSliderRe, replacement);
+  changed = true;
+}
+
+if (!next.includes(workAccessMarker) || !next.includes(ultraSliderMarker)) {
+  process.stderr.write('model-picker-patch-verification-failed\n');
   process.exit(2);
 }
 if (changed) {
@@ -1180,6 +1259,7 @@ if (changed) {
     Fast = $fastPatcherPath
     FastUi = $fastUiPatcherPath
     CustomModels = $customModelsPatcherPath
+    ModelPicker = $modelPickerPatcherPath
     LocaleI18n = $localePatcherPath
     Plugins = $pluginsPatcherPath
     Goal = $goalPatcherPath
@@ -1238,6 +1318,20 @@ function Find-PatchTargets {
   }
   if ([string]::IsNullOrWhiteSpace($customModelsTarget)) {
     Fail 'could not find custom model visibility filter in extracted assets'
+  }
+  $modelPickerTarget = $null
+  foreach ($candidate in (Get-ChildItem -LiteralPath $assetsDir -Filter 'model-and-reasoning-dropdown-*.js' -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)) {
+    $text = Get-Content -Raw -LiteralPath $candidate
+    if ($text.Contains('harborEnabled:') -and
+        $text.Contains('isEverydayWorkMode:') -and
+        $text.Contains('powerSettingIndex') -and
+        $text.Contains('reasoningEffort:`ultra`')) {
+      $modelPickerTarget = $candidate
+      break
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($modelPickerTarget)) {
+    Fail 'could not find compact Power / Ultra model picker in extracted assets'
   }
   $localeI18nTarget = $null
   $localeCandidates = @(
@@ -1499,6 +1593,7 @@ function Find-PatchTargets {
     FastMode = $fastModeTarget
     FastModeUi = $fastModeUiTarget
     CustomModels = $customModelsTarget
+    ModelPicker = $modelPickerTarget
     LocaleI18n = $localeI18nTarget
     PluginSidebar = $pluginSidebarTarget
     PluginSkills = $pluginSkillsTarget
@@ -1604,16 +1699,33 @@ function Invoke-PatchAppAsar {
     if ([string]::IsNullOrWhiteSpace($customModelsTarget)) {
       Fail 'could not find custom model visibility filter in extracted assets'
     }
+    $modelPickerTarget = $null
+    foreach ($candidate in (Get-ChildItem -LiteralPath $assetsDir -Filter 'model-and-reasoning-dropdown-*.js' -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)) {
+      $text = Get-Content -Raw -LiteralPath $candidate
+      if ($text.Contains('harborEnabled:') -and
+          $text.Contains('isEverydayWorkMode:') -and
+          $text.Contains('powerSettingIndex') -and
+          $text.Contains('reasoningEffort:`ultra`')) {
+        $modelPickerTarget = $candidate
+        break
+      }
+    }
+    if ([string]::IsNullOrWhiteSpace($modelPickerTarget)) {
+      Fail 'could not find compact Power / Ultra model picker in extracted assets'
+    }
     Write-Log "Model Experience Fast Mode request target: $fastModeTarget"
     Write-Log "Model Experience Fast Mode UI target: $fastModeUiTarget"
-    Write-Log "Model Experience custom models / Ultra target: $customModelsTarget"
+    Write-Log "Model Experience custom model metadata target: $customModelsTarget"
+    Write-Log "Model Experience compact Power / Ultra target: $modelPickerTarget"
     $fastModeResult = Invoke-NodePatcher $nodePath $patchers.Fast @($fastModeTarget)
     Write-Log "Model Experience Fast Mode request result: $fastModeResult"
     $fastModeUiResult = Invoke-NodePatcher $nodePath $patchers.FastUi @($fastModeUiTarget)
     Write-Log "Model Experience Fast Mode UI result: $fastModeUiResult"
     $customModelsResult = Invoke-NodePatcher $nodePath $patchers.CustomModels (@($customModelsTarget) + @($CustomModels))
-    Write-Log "Model Experience custom models / Ultra result: $customModelsResult ($($CustomModels -join ', '))"
-    foreach ($syntaxTarget in @($fastModeTarget, $fastModeUiTarget, $customModelsTarget)) {
+    Write-Log "Model Experience custom model metadata result: $customModelsResult ($($CustomModels -join ', '))"
+    $modelPickerResult = Invoke-NodePatcher $nodePath $patchers.ModelPicker @($modelPickerTarget)
+    Write-Log "Model Experience compact Power / Ultra result: $modelPickerResult"
+    foreach ($syntaxTarget in @($fastModeTarget, $fastModeUiTarget, $customModelsTarget, $modelPickerTarget)) {
       & $nodePath --check $syntaxTarget
       if ($LASTEXITCODE -ne 0) {
         Fail "Model Experience patched asset failed node --check: $syntaxTarget"
@@ -1627,7 +1739,8 @@ function Invoke-PatchAppAsar {
     }
     if ($fastModeResult -eq 'already-patched' -and
         $fastModeUiResult -eq 'already-patched' -and
-        $customModelsResult -eq 'already-patched') {
+        $customModelsResult -eq 'already-patched' -and
+        $modelPickerResult -eq 'already-patched') {
       Write-Log 'asar Model Experience patches already present'
       return $false
     }
@@ -1680,7 +1793,16 @@ function Invoke-PatchAppAsar {
   $fastUi = Invoke-NodePatcher $nodePath $patchers.FastUi @($targets.FastModeUi)
   Write-Log "fast-mode UI patch result: $fastUi"
   $customModels = Invoke-NodePatcher $nodePath $patchers.CustomModels (@($targets.CustomModels) + @($CustomModels))
-  Write-Log "custom models / Ultra patch result: $customModels ($($CustomModels -join ', '))"
+  Write-Log "custom model metadata patch result: $customModels ($($CustomModels -join ', '))"
+  $modelPicker = Invoke-NodePatcher $nodePath $patchers.ModelPicker @($targets.ModelPicker)
+  Write-Log "compact Power / Ultra patch result: $modelPicker"
+  foreach ($syntaxTarget in @($targets.FastMode, $targets.FastModeUi, $targets.CustomModels, $targets.ModelPicker)) {
+    & $nodePath --check $syntaxTarget
+    if ($LASTEXITCODE -ne 0) {
+      Fail "Model Experience patched asset failed node --check: $syntaxTarget"
+    }
+  }
+  Write-Log 'Model Experience patched asset syntax checks passed'
 
   $localeI18n = Invoke-NodePatcher $nodePath $patchers.LocaleI18n @($targets.LocaleI18n)
   Write-Log "locale i18n patch result: $localeI18n"
@@ -1718,6 +1840,7 @@ function Invoke-PatchAppAsar {
   if ($fast -eq 'already-patched' -and
       $fastUi -eq 'already-patched' -and
       $customModels -eq 'already-patched' -and
+      $modelPicker -eq 'already-patched' -and
       $localeI18n -eq 'already-patched' -and
       $plugins -eq 'already-patched' -and
       $goal -eq 'already-patched' -and

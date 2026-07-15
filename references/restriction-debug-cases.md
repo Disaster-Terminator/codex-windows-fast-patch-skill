@@ -29,7 +29,7 @@ Action:
 powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\skills\codex-windows-fast-patch\scripts\patch_codex_fast_mode_windows_msix.ps1" -OnlyModelExperience -DryRun -OutputRoot "<large-local-build-root>"
 ```
 
-- If the dry run reports any `patched` result, install the same targeted workflow from an external executor. If all three results are `already-patched`, do not rebuild the package; continue with provider/proxy and model-cache diagnosis.
+- If the dry run reports any `patched` result, install the same targeted workflow from an external executor. If all four Model Experience results are `already-patched`, do not rebuild the package; continue with provider/proxy and model-cache diagnosis.
 - Treat proxy configuration as part of Fast Mode validation, not as optional documentation.
 
 ## UI Gate Is Still Blocking A Feature
