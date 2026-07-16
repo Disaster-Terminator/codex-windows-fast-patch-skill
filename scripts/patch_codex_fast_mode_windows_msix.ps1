@@ -493,6 +493,7 @@ function Write-PatcherFiles {
   $fastPatcherPath = Join-Path $WorkDir 'PatchFastMode.cjs'
   $fastUiPatcherPath = Join-Path $WorkDir 'PatchFastModeUi.cjs'
   $customModelsPatcherPath = Join-Path $WorkDir 'PatchCustomModels.cjs'
+  $powerSliderPatcherPath = Join-Path $WorkDir 'PatchPowerSlider.cjs'
   $localePatcherPath = Join-Path $WorkDir 'PatchLocaleI18n.cjs'
   $pluginsPatcherPath = Join-Path $WorkDir 'PatchPlugins.cjs'
   $goalPatcherPath = Join-Path $WorkDir 'PatchGoal.cjs'
@@ -620,6 +621,35 @@ const replacement = `if(/*${marker}*/${forced}.includes(${match[3]}.model)||(${m
 const next = text.replace(visibilityRe, replacement);
 if (!next.includes(marker) || !models.every((model) => next.includes(model))) {
   process.stderr.write('custom-model-patch-verification-failed\n');
+  process.exit(2);
+}
+fs.writeFileSync(file, next);
+process.stdout.write('patched');
+'@
+
+  Set-Content -LiteralPath $powerSliderPatcherPath -Encoding UTF8 -Value @'
+const fs = require('node:fs');
+const file = process.argv[2];
+const marker = 'CODEX_POWER_SLIDER_V1';
+const text = fs.readFileSync(file, 'utf8');
+
+if (text.includes(marker)) {
+  process.stdout.write('already-patched');
+  process.exit(0);
+}
+
+const gateRe = /function ([$A-Za-z_][$\w]*)\(\{harborEnabled:([$A-Za-z_][$\w]*),isElectron:([$A-Za-z_][$\w]*),isEverydayWorkMode:([$A-Za-z_][$\w]*)\}\)\{return \4\|\|\3&&\2\}/;
+const match = text.match(gateRe);
+if (!match) {
+  process.stderr.write('power-slider-harbor-gate-target-not-found\n');
+  process.exit(2);
+}
+
+const [, fn, harborEnabled, isElectron, isEverydayWorkMode] = match;
+const replacement = `function ${fn}({harborEnabled:${harborEnabled},isElectron:${isElectron},isEverydayWorkMode:${isEverydayWorkMode}}){return ${isEverydayWorkMode}||${isElectron}/*${marker}*/}`;
+const next = text.replace(gateRe, replacement);
+if (!next.includes(marker)) {
+  process.stderr.write('power-slider-patch-verification-failed\n');
   process.exit(2);
 }
 fs.writeFileSync(file, next);
@@ -1144,6 +1174,7 @@ if (changed) {
     Fast = $fastPatcherPath
     FastUi = $fastUiPatcherPath
     CustomModels = $customModelsPatcherPath
+    PowerSlider = $powerSliderPatcherPath
     LocaleI18n = $localePatcherPath
     Plugins = $pluginsPatcherPath
     Goal = $goalPatcherPath
@@ -1202,6 +1233,20 @@ function Find-PatchTargets {
   }
   if ([string]::IsNullOrWhiteSpace($customModelsTarget)) {
     Fail 'could not find custom model visibility filter in extracted assets'
+  }
+  $powerSliderTarget = $null
+  foreach ($candidate in (Get-ChildItem -LiteralPath $assetsDir -Filter 'model-and-reasoning-dropdown-*.js' -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)) {
+    $text = Get-Content -Raw -LiteralPath $candidate
+    if ($text.Contains('harborEnabled:') -and
+        $text.Contains('isElectron:') -and
+        $text.Contains('isEverydayWorkMode:') -and
+        $text.Contains('model-picker-power-slider-impl')) {
+      $powerSliderTarget = $candidate
+      break
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($powerSliderTarget)) {
+    Fail 'could not find compact Power slider harbor gate in extracted assets'
   }
   $localeI18nTarget = $null
   $localeCandidates = @(
@@ -1443,6 +1488,7 @@ function Find-PatchTargets {
   Write-Log "fast-mode patch target: $fastModeTarget"
   Write-Log "fast-mode UI patch target: $fastModeUiTarget"
   Write-Log "custom models patch target: $customModelsTarget"
+  Write-Log "Power slider patch target: $powerSliderTarget"
   Write-Log "locale i18n patch target: $localeI18nTarget"
   Write-Log "plugin sidebar patch target: $pluginSidebarTarget"
   Write-Log "plugin skills-page patch target: $pluginSkillsTarget"
@@ -1463,6 +1509,7 @@ function Find-PatchTargets {
     FastMode = $fastModeTarget
     FastModeUi = $fastModeUiTarget
     CustomModels = $customModelsTarget
+    PowerSlider = $powerSliderTarget
     LocaleI18n = $localeI18nTarget
     PluginSidebar = $pluginSidebarTarget
     PluginSkills = $pluginSkillsTarget
@@ -1568,16 +1615,33 @@ function Invoke-PatchAppAsar {
     if ([string]::IsNullOrWhiteSpace($customModelsTarget)) {
       Fail 'could not find custom model visibility filter in extracted assets'
     }
+    $powerSliderTarget = $null
+    foreach ($candidate in (Get-ChildItem -LiteralPath $assetsDir -Filter 'model-and-reasoning-dropdown-*.js' -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)) {
+      $text = Get-Content -Raw -LiteralPath $candidate
+      if ($text.Contains('harborEnabled:') -and
+          $text.Contains('isElectron:') -and
+          $text.Contains('isEverydayWorkMode:') -and
+          $text.Contains('model-picker-power-slider-impl')) {
+        $powerSliderTarget = $candidate
+        break
+      }
+    }
+    if ([string]::IsNullOrWhiteSpace($powerSliderTarget)) {
+      Fail 'could not find Model Experience compact Power slider harbor gate'
+    }
     Write-Log "Model Experience Fast Mode request target: $fastModeTarget"
     Write-Log "Model Experience Fast Mode UI target: $fastModeUiTarget"
     Write-Log "Model Experience custom models target: $customModelsTarget"
+    Write-Log "Model Experience Power slider target: $powerSliderTarget"
     $fastModeResult = Invoke-NodePatcher $nodePath $patchers.Fast @($fastModeTarget)
     Write-Log "Model Experience Fast Mode request result: $fastModeResult"
     $fastModeUiResult = Invoke-NodePatcher $nodePath $patchers.FastUi @($fastModeUiTarget)
     Write-Log "Model Experience Fast Mode UI result: $fastModeUiResult"
     $customModelsResult = Invoke-NodePatcher $nodePath $patchers.CustomModels (@($customModelsTarget) + @($CustomModels))
     Write-Log "Model Experience custom models result: $customModelsResult ($($CustomModels -join ', '))"
-    foreach ($syntaxTarget in @($fastModeTarget, $fastModeUiTarget, $customModelsTarget)) {
+    $powerSliderResult = Invoke-NodePatcher $nodePath $patchers.PowerSlider @($powerSliderTarget)
+    Write-Log "Model Experience Power slider result: $powerSliderResult"
+    foreach ($syntaxTarget in @($fastModeTarget, $fastModeUiTarget, $customModelsTarget, $powerSliderTarget)) {
       & $nodePath --check $syntaxTarget
       if ($LASTEXITCODE -ne 0) {
         Fail "Model Experience patched asset failed node --check: $syntaxTarget"
@@ -1591,7 +1655,8 @@ function Invoke-PatchAppAsar {
     }
     if ($fastModeResult -eq 'already-patched' -and
         $fastModeUiResult -eq 'already-patched' -and
-        $customModelsResult -eq 'already-patched') {
+        $customModelsResult -eq 'already-patched' -and
+        $powerSliderResult -eq 'already-patched') {
       Write-Log 'asar Model Experience patches already present'
       return $false
     }
@@ -1645,6 +1710,8 @@ function Invoke-PatchAppAsar {
   Write-Log "fast-mode UI patch result: $fastUi"
   $customModels = Invoke-NodePatcher $nodePath $patchers.CustomModels (@($targets.CustomModels) + @($CustomModels))
   Write-Log "custom models patch result: $customModels ($($CustomModels -join ', '))"
+  $powerSlider = Invoke-NodePatcher $nodePath $patchers.PowerSlider @($targets.PowerSlider)
+  Write-Log "Power slider patch result: $powerSlider"
 
   $localeI18n = Invoke-NodePatcher $nodePath $patchers.LocaleI18n @($targets.LocaleI18n)
   Write-Log "locale i18n patch result: $localeI18n"
@@ -1682,6 +1749,7 @@ function Invoke-PatchAppAsar {
   if ($fast -eq 'already-patched' -and
       $fastUi -eq 'already-patched' -and
       $customModels -eq 'already-patched' -and
+      $powerSlider -eq 'already-patched' -and
       $localeI18n -eq 'already-patched' -and
       $plugins -eq 'already-patched' -and
       $goal -eq 'already-patched' -and
