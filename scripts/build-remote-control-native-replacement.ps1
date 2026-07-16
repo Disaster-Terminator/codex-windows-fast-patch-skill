@@ -25,6 +25,7 @@ $SkillRoot = Split-Path -Parent $ScriptRoot
 $NativePatchRelativePaths = @{
   '0.142.4' = 'references\remote-control-native-replacement-0.142.4.patch'
   '0.144.0-alpha.4' = 'references\remote-control-native-replacement.patch'
+  '0.144.5' = 'references\remote-control-native-replacement.patch'
 }
 $PatchPath = $null
 $WindowsSdkCppVersion = '10.0.26100.4188'
@@ -121,6 +122,18 @@ function Resolve-NativeBuildVersion {
 function Resolve-FullPath {
   param([string]$Path)
   return [System.IO.Path]::GetFullPath($Path)
+}
+
+function Get-FileSha256 {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  $stream = [System.IO.File]::OpenRead($Path)
+  $sha256 = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    return -join ($sha256.ComputeHash($stream) | ForEach-Object { $_.ToString('X2') })
+  } finally {
+    $sha256.Dispose()
+    $stream.Dispose()
+  }
 }
 
 function Get-RequiredCommand {
@@ -1002,7 +1015,7 @@ $sourceCommit = Get-GitCommit -GitPath $git -RepositoryRoot $SourceRoot -Revisio
 if (-not $sourceCommit) {
   Fail "failed to resolve source commit after checkout: $SourceRoot"
 }
-$patchSha256 = (Get-FileHash -LiteralPath $PatchPath -Algorithm SHA256).Hash
+$patchSha256 = Get-FileSha256 -Path $PatchPath
 
 Write-Log "CARGO_HOME=$env:CARGO_HOME"
 Write-Log "RUSTUP_HOME=$env:RUSTUP_HOME"
