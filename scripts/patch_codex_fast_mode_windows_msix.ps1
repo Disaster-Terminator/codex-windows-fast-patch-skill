@@ -1950,12 +1950,24 @@ function Invoke-FastModeVerification {
 const crypto = require("crypto");
 const fs = require("fs");
 const http = require("http");
+const zlib = require("zlib");
 
 const port = Number(process.argv[2]);
 const outPath = process.argv[3];
 
 function write(obj) {
   fs.appendFileSync(outPath, JSON.stringify(obj) + "\n");
+}
+
+function getServiceTier(text) {
+  try {
+    const payload = JSON.parse(text);
+    if (typeof payload.service_tier === "string") return payload.service_tier;
+  } catch {
+    // WebSocket payloads can wrap the request JSON, so fall back to a text match.
+  }
+  const match = String(text).match(/"service_tier"\s*:\s*"([^"]+)"/);
+  return match ? match[1] : null;
 }
 
 function decodeFrames(buffer) {
@@ -1997,9 +2009,25 @@ function decodeFrames(buffer) {
 }
 
 const server = http.createServer((req, res) => {
-  write({ kind: "http", method: req.method, url: req.url });
-  res.writeHead(404);
-  res.end();
+  const chunks = [];
+  req.on("data", (chunk) => chunks.push(chunk));
+  req.on("end", () => {
+    let body = Buffer.concat(chunks);
+    const encoding = String(req.headers["content-encoding"] || "").toLowerCase();
+    try {
+      if (encoding.includes("gzip")) body = zlib.gunzipSync(body);
+      else if (encoding.includes("deflate")) body = zlib.inflateSync(body);
+      else if (encoding.includes("br")) body = zlib.brotliDecompressSync(body);
+      else if (encoding.includes("zstd") && zlib.zstdDecompressSync) body = zlib.zstdDecompressSync(body);
+    } catch {
+      // Keep the raw body if a future client uses an encoding this runtime cannot decode.
+    }
+    const text = body.toString("utf8");
+    write({ kind: "http", method: req.method, url: req.url, service_tier: getServiceTier(text) });
+    const response = Buffer.from(JSON.stringify({ error: { message: "capture complete", type: "invalid_request_error" } }));
+    res.writeHead(400, { "Content-Type": "application/json", "Content-Length": response.length });
+    res.end(response);
+  });
 });
 
 server.on("upgrade", (req, socket, head) => {
@@ -2023,7 +2051,7 @@ server.on("upgrade", (req, socket, head) => {
     const decoded = decodeFrames(pending);
     pending = Buffer.from(decoded.rest);
     for (const frame of decoded.frames) {
-      if (frame.opcode === 1) write({ kind: "frame", text: frame.text });
+      if (frame.opcode === 1) write({ kind: "frame", service_tier: getServiceTier(frame.text) });
       if (frame.opcode === 8) socket.destroy();
     }
   }
@@ -2057,12 +2085,22 @@ setTimeout(() => server.close(() => process.exit(0)), 15000).unref();
     }
 
     Write-Log 'verifying Fast Mode by capturing Codex wire request service_tier'
-    $baseUrlConfig = 'openai_base_url="http://127.0.0.1:' + $port + '/v1"'
+    $providerId = 'codex-fast-wire'
+    $providerNameConfig = 'model_providers.' + $providerId + '.name="Codex Fast Wire Capture"'
+    $baseUrlConfig = 'model_providers.' + $providerId + '.base_url="http://127.0.0.1:' + $port + '/v1"'
+    $wireApiConfig = 'model_providers.' + $providerId + '.wire_api="responses"'
+    $providerConfig = 'model_provider="' + $providerId + '"'
     $wireTier = $null
     $codexJob = Start-Job -ScriptBlock {
-      param([string]$CodexPath, [string]$BaseUrlConfig)
-      & $CodexPath exec --json --skip-git-repo-check -c 'model_provider="openai"' -c $BaseUrlConfig -c 'service_tier="fast"' -c 'model_reasoning_effort="low"' 'wire capture only' 2>&1 | Out-Null
-    } -ArgumentList $codex, $baseUrlConfig
+      param(
+        [string]$CodexPath,
+        [string]$ProviderConfig,
+        [string]$ProviderNameConfig,
+        [string]$BaseUrlConfig,
+        [string]$WireApiConfig
+      )
+      & $CodexPath exec --ignore-user-config --ephemeral --json --skip-git-repo-check -c $ProviderConfig -c $ProviderNameConfig -c $BaseUrlConfig -c $WireApiConfig -c 'service_tier="fast"' -c 'model_reasoning_effort="low"' -c 'features.enable_request_compression=false' 'wire capture only' 2>&1 | Out-Null
+    } -ArgumentList $codex, $providerConfig, $providerNameConfig, $baseUrlConfig, $wireApiConfig
 
     $requestDeadline = (Get-Date).AddSeconds(25)
     while ((Get-Date) -lt $requestDeadline -and -not $wireTier) {
@@ -2076,12 +2114,11 @@ setTimeout(() => server.close(() => process.exit(0)), 15000).unref();
         } catch {
           continue
         }
-        if ($entry.kind -ne 'frame' -or -not $entry.text) {
+        if ($entry.kind -notin @('frame', 'http')) {
           continue
         }
-        $match = [regex]::Match([string]$entry.text, '"service_tier"\s*:\s*"([^"]+)"')
-        if ($match.Success) {
-          $wireTier = $match.Groups[1].Value
+        if (-not [string]::IsNullOrWhiteSpace([string]$entry.service_tier)) {
+          $wireTier = [string]$entry.service_tier
           break
         }
       }

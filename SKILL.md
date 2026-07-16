@@ -320,7 +320,7 @@ Success criteria:
 - Do not modify `C:\Program Files\WindowsApps` in place. Use the MSIX repack script.
 - Do not run the phone remote-control MSIX patch as a default repatch side effect. Use it only for phone remote-control tasks or when the user explicitly asks for that workflow.
 - Do not treat every `missing field inputSchema` as an MCP problem. If CLI smoke tests pass while Desktop UI fails and the dynamic-tools ASAR asset still returns a namespace wrapper, use the Dynamic Tools Schema workflow instead of disabling unrelated MCP servers.
-- Do not trust a response like `FAST_CHECK_OK` as proof of Fast Mode. Trust only the wrapper/script wire verification, which captures Codex's `/v1/responses` WebSocket request and checks `service_tier=priority`.
+- Do not trust a response like `FAST_CHECK_OK` as proof of Fast Mode. Trust only the wrapper/script wire verification, which captures Codex's local `/v1/responses` HTTP body or WebSocket frame and checks `service_tier=priority`.
 - If the app launches then immediately exits, run Electron logging and check for ASAR integrity failures:
 
 ```powershell
@@ -373,7 +373,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\ski
 
 - `-DryRun`: verify bundle targets only; no install.
 - `-NoLaunch`: install but do not start Codex Desktop.
-- `-SkipFastVerify`: skip the WebSocket `service_tier` capture.
+- `-SkipFastVerify`: skip the local HTTP/WebSocket `service_tier` capture.
 - `-CustomModels <id1,id2,...>`: custom model IDs forced through the Desktop model visibility filter; defaults to `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`.
 - `-KeepBuild`: keep `Downloads\codex-msix-repack` for debugging.
 - `-OutputRoot <path>`: optional large local build root; use it when the default output root is short on space, points at a broken junction, or should be kept off the system drive.
