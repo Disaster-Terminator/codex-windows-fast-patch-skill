@@ -107,6 +107,19 @@ function Remove-ReparsePointOrDirectory {
   Remove-Item -LiteralPath $item.FullName -Recurse -Force
 }
 
+function Test-TransientCopyRace {
+  param([System.Exception]$Exception)
+
+  $current = $Exception
+  while ($current) {
+    if ($current -is [System.IO.FileNotFoundException] -or $current -is [System.IO.DirectoryNotFoundException]) {
+      return $true
+    }
+    $current = $current.InnerException
+  }
+  return $false
+}
+
 function Copy-DirectoryDataOnly {
   param(
     [string]$Source,
@@ -117,26 +130,38 @@ function Copy-DirectoryDataOnly {
     throw "copy source directory not found: $Source"
   }
 
-  if (Test-Path -LiteralPath $Destination) {
-    Remove-ReparsePointOrDirectory $Destination
-  }
+  $maxAttempts = 3
+  for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+    try {
+      if (Test-Path -LiteralPath $Destination) {
+        Remove-ReparsePointOrDirectory $Destination
+      }
 
-  $sourceRoot = (Resolve-Path -LiteralPath $Source).ProviderPath
-  Resolve-OrCreateDirectory $Destination | Out-Null
+      $sourceRoot = (Resolve-Path -LiteralPath $Source).ProviderPath
+      Resolve-OrCreateDirectory $Destination | Out-Null
 
-  foreach ($dir in Get-ChildItem -LiteralPath $sourceRoot -Recurse -Directory -Force) {
-    $relative = $dir.FullName.Substring($sourceRoot.Length).TrimStart('\')
-    Resolve-OrCreateDirectory (Join-Path $Destination $relative) | Out-Null
-  }
+      foreach ($dir in Get-ChildItem -LiteralPath $sourceRoot -Recurse -Directory -Force) {
+        $relative = $dir.FullName.Substring($sourceRoot.Length).TrimStart('\')
+        Resolve-OrCreateDirectory (Join-Path $Destination $relative) | Out-Null
+      }
 
-  foreach ($file in Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -Force) {
-    $relative = $file.FullName.Substring($sourceRoot.Length).TrimStart('\')
-    $target = Join-Path $Destination $relative
-    $targetParent = Split-Path -Parent $target
-    Resolve-OrCreateDirectory $targetParent | Out-Null
-    [System.IO.Directory]::CreateDirectory($targetParent) | Out-Null
-    [System.IO.File]::WriteAllBytes($target, [System.IO.File]::ReadAllBytes($file.FullName))
-    [System.IO.File]::SetLastWriteTime($target, $file.LastWriteTime)
+      foreach ($file in Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -Force) {
+        $relative = $file.FullName.Substring($sourceRoot.Length).TrimStart('\')
+        $target = Join-Path $Destination $relative
+        $targetParent = Split-Path -Parent $target
+        Resolve-OrCreateDirectory $targetParent | Out-Null
+        [System.IO.Directory]::CreateDirectory($targetParent) | Out-Null
+        [System.IO.File]::WriteAllBytes($target, [System.IO.File]::ReadAllBytes($file.FullName))
+        [System.IO.File]::SetLastWriteTime($target, $file.LastWriteTime)
+      }
+      return
+    } catch {
+      if ($attempt -ge $maxAttempts -or -not (Test-TransientCopyRace $_.Exception)) {
+        throw
+      }
+      Write-Log "warning: source tree changed during copy; retrying $attempt/${maxAttempts}: $Source"
+      Start-Sleep -Seconds 1
+    }
   }
 }
 
@@ -770,6 +795,11 @@ function Update-CodexConfig {
   Set-TomlTable $configPath '[plugins."chrome@openai-bundled"]' @{
     enabled = $true
   }
+  if (Test-BundledMarketplacePluginAvailable $MarketplaceRoot 'sites') {
+    Set-TomlTable $configPath '[plugins."sites@openai-bundled"]' @{
+      enabled = $true
+    }
+  }
   Set-TomlTable $configPath '[windows]' @{
     sandbox = 'unelevated'
   }
@@ -976,6 +1006,16 @@ function Get-PluginVersion {
   return $version
 }
 
+function Test-BundledMarketplacePluginAvailable {
+  param(
+    [string]$MarketplaceRoot,
+    [string]$PluginName
+  )
+
+  $pluginJson = Join-Path $MarketplaceRoot "plugins\$PluginName\.codex-plugin\plugin.json"
+  return Test-Path -LiteralPath $pluginJson -PathType Leaf
+}
+
 function Sync-OpenAiBundledPluginCache {
   param(
     [string]$MarketplaceRoot,
@@ -1159,6 +1199,7 @@ function Test-CodexConfig {
 
   Test-TomlSyntax $ConfigPath
   $expectedSource = '\\?\' + $MarketplaceRoot
+  $sitesRequired = Test-BundledMarketplacePluginAvailable $MarketplaceRoot 'sites'
   $python = Get-Command python -ErrorAction SilentlyContinue | Select-Object -First 1
   if (-not $python) {
     $content = [System.IO.File]::ReadAllText($ConfigPath, [System.Text.UTF8Encoding]::new($false))
@@ -1173,6 +1214,9 @@ function Test-CodexConfig {
     }
     if ($content -notmatch '(?ms)^\[plugins\."chrome@openai-bundled"\]\s*\r?\n(?:(?!^\[).)*enabled\s*=\s*true') {
       throw 'config.toml is missing plugins."chrome@openai-bundled".enabled=true'
+    }
+    if ($sitesRequired -and $content -notmatch '(?ms)^\[plugins\."sites@openai-bundled"\]\s*\r?\n(?:(?!^\[).)*enabled\s*=\s*true') {
+      throw 'config.toml is missing plugins."sites@openai-bundled".enabled=true'
     }
     if ($content -notmatch '(?ms)^\[windows\]\s*\r?\n(?:(?!^\[).)*sandbox\s*=\s*[''"]unelevated[''"]') {
       throw 'config.toml is missing windows.sandbox=unelevated'
@@ -1191,6 +1235,7 @@ import tomllib
 
 config_path = pathlib.Path(sys.argv[1])
 expected_source = sys.argv[2]
+sites_required = sys.argv[3].lower() == "true"
 data = tomllib.loads(config_path.read_text(encoding="utf-8"))
 errors = []
 
@@ -1210,7 +1255,11 @@ if not isinstance(plugin, dict):
 elif plugin.get("enabled") is not True:
     errors.append('plugins."computer-use@openai-bundled".enabled must be true')
 
-for plugin_id in ("browser@openai-bundled", "chrome@openai-bundled"):
+required_plugin_ids = ["browser@openai-bundled", "chrome@openai-bundled"]
+if sites_required:
+    required_plugin_ids.append("sites@openai-bundled")
+
+for plugin_id in required_plugin_ids:
     plugin = plugins.get(plugin_id)
     if not isinstance(plugin, dict):
         errors.append(f'missing [plugins."{plugin_id}"]')
@@ -1237,7 +1286,7 @@ if errors:
   $temp = Join-Path $env:TEMP ('codex-config-validate-' + [guid]::NewGuid().ToString('N') + '.py')
   try {
     Write-Utf8NoBom $temp $script
-    & $python.Source $temp $ConfigPath $expectedSource
+    & $python.Source $temp $ConfigPath $expectedSource ([string]$sitesRequired)
     if ($LASTEXITCODE -ne 0) {
       throw "semantic config validation failed for $ConfigPath"
     }
@@ -1387,9 +1436,15 @@ function Install-ComputerUse {
   Update-CodexConfig $marketplaceRoot
   Enable-UserEnvironment
 
-  $computerUseCacheRoot = Sync-OpenAiBundledPluginCache $marketplaceRoot 'computer-use'
-  $browserCacheRoot = Sync-OpenAiBundledPluginCache $marketplaceRoot 'browser'
-  $chromeCacheRoot = Sync-OpenAiBundledPluginCache $marketplaceRoot 'chrome'
+  $installedMarketplaceRoot = Get-InstalledBundledMarketplaceRoot
+  $computerUseCacheRoot = Sync-OpenAiBundledPluginCache $installedMarketplaceRoot 'computer-use'
+  Write-PluginTree $computerUseCacheRoot
+  $browserCacheRoot = Sync-OpenAiBundledPluginCache $installedMarketplaceRoot 'browser'
+  $chromeCacheRoot = Sync-OpenAiBundledPluginCache $installedMarketplaceRoot 'chrome'
+  if (Test-BundledMarketplacePluginAvailable $installedMarketplaceRoot 'sites') {
+    $sitesCacheRoot = Sync-OpenAiBundledPluginCache $installedMarketplaceRoot 'sites'
+    Write-Log "installed cached plugin: $sitesCacheRoot"
+  }
 
   Update-ChromeNativeMessagingManifest $chromeCacheRoot
 
@@ -1405,12 +1460,21 @@ function Test-ComputerUse {
   $cacheLatest = Join-Path $codexHomeResolved 'plugins\cache\openai-bundled\computer-use\latest'
   $browserPluginRoot = Join-Path $marketplaceRoot 'plugins\browser'
   $chromePluginRoot = Join-Path $marketplaceRoot 'plugins\chrome'
+  $sitesPluginRoot = Join-Path $marketplaceRoot 'plugins\sites'
+  $sitesAvailable = Test-BundledMarketplacePluginAvailable $marketplaceRoot 'sites'
   $browserVersion = Get-PluginVersion $browserPluginRoot
   $chromeVersion = Get-PluginVersion $chromePluginRoot
   $browserCacheLatest = Join-Path $codexHomeResolved 'plugins\cache\openai-bundled\browser\latest'
   $chromeCacheLatest = Join-Path $codexHomeResolved 'plugins\cache\openai-bundled\chrome\latest'
   $browserCacheVersionRoot = Join-Path $codexHomeResolved "plugins\cache\openai-bundled\browser\$browserVersion"
   $chromeCacheVersionRoot = Join-Path $codexHomeResolved "plugins\cache\openai-bundled\chrome\$chromeVersion"
+  $sitesCacheLatest = $null
+  $sitesCacheVersionRoot = $null
+  if ($sitesAvailable) {
+    $sitesVersion = Get-PluginVersion $sitesPluginRoot
+    $sitesCacheLatest = Join-Path $codexHomeResolved 'plugins\cache\openai-bundled\sites\latest'
+    $sitesCacheVersionRoot = Join-Path $codexHomeResolved "plugins\cache\openai-bundled\sites\$sitesVersion"
+  }
   $chromeNativeManifest = Join-Path $env:LOCALAPPDATA 'OpenAI\extension\com.openai.codexextension.json'
   $chromeHostPath = Join-Path $chromeCacheVersionRoot 'extension-host\windows\x64\extension-host.exe'
   $computerUseClientPath = Join-Path $cacheLatest 'scripts\computer-use-client.mjs'
@@ -1432,6 +1496,13 @@ function Test-ComputerUse {
     $computerUseBasePath,
     $helperTransportPath
   )
+  if ($sitesAvailable) {
+    $required += @(
+      (Join-Path $sitesPluginRoot '.codex-plugin\plugin.json'),
+      (Join-Path $sitesCacheVersionRoot '.codex-plugin\plugin.json'),
+      $sitesCacheLatest
+    )
+  }
 
   foreach ($path in $required) {
     if (-not (Test-Path -LiteralPath $path)) {
@@ -1446,6 +1517,9 @@ function Test-ComputerUse {
     } else {
       Write-Log "warning: bundled plugin latest junction not present; using versioned cache path: $optionalLatestPath"
     }
+  }
+  if ($sitesAvailable) {
+    $latestPathsToCheck += $sitesCacheLatest
   }
 
   foreach ($latestPath in $latestPathsToCheck) {

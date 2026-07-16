@@ -140,6 +140,7 @@ Action:
 - Do not start with the full MSIX repack for this symptom class. The full repack removes and reinstalls the `OpenAI.Codex` package and can make the running Desktop app disappear; use it only after evidence shows a Desktop ASAR/UI gate is still closed.
 - Stop only those bundled `extension-host` processes when they are locking the bundled marketplace mirror.
 - Rerun `scripts\install-computer-use-local.ps1`.
+- If the copy fails because a file under `.tmp\bundled-marketplaces\openai-bundled` disappears mid-read, treat it as Desktop reconciliation racing the repair. Stable plugin caches must be sourced from the installed package; only the locally modified Computer Use runtime is overlaid afterward.
 - Restart Codex Desktop.
 - Confirm the latest Desktop log ends with `computer-use native pipe startup ready`.
 - If `-StrictVerifyOnly` fails because `plugins\cache\openai-bundled\computer-use\latest\.codex-plugin\plugin.json` is missing, run `-VerifyOnly` once to rebuild the cached plugin and `latest` link, then rerun `-StrictVerifyOnly`.
@@ -176,7 +177,7 @@ Action:
 
 - Use the targeted bundled marketplace patch with `-OnlyBundledMarketplaceCopy` and a non-system `-OutputRoot` when the user is avoiding C: drive pressure.
 - After install and relaunch, run `scripts\install-computer-use-local.ps1 -VerifyOnly` to rebuild the local mirror/cache, then `-StrictVerifyOnly`.
-- If `sites` was already uninstalled, reinstall it with `codex plugin add sites@openai-bundled` after the patch is live.
+- If `sites` was already uninstalled, rerun `install-computer-use-local.ps1 -VerifyOnly`; when the installed bundled marketplace provides `sites`, the repair re-enables it and rebuilds its stable cache automatically.
 - Verify recent logs show the five-plugin set and no new `not_in_bundled_marketplace_plugin_names` for `sites`.
 - Do not run Phone Remote Control scripts for this class. Do not run a full Fast/browser/Computer Use repatch unless separate logs show a closed Desktop gate such as `reason=statsig-disabled`.
 
