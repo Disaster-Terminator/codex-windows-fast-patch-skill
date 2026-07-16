@@ -6,6 +6,10 @@ param(
   [int]$DefaultTimeoutSeconds = 120,
   [int]$MsixDryRunTimeoutSeconds = 900,
   [int]$FullRepatchTimeoutSeconds = 1800,
+  [int]$RemoteControlTimeoutSeconds = 1800,
+  [string]$RemoteControlOutputRoot,
+  [string]$RemoteControlNativeWorkRoot,
+  [string]$ReplacementResourceCodexExe,
   [switch]$Force
 )
 
@@ -14,7 +18,10 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
   $OutputRoot = Join-Path $repoRoot 'artifacts\runs'
 }
-$validSteps = @('Status', 'Backup', 'ComputerUseStrict', 'ComputerUseRepairVerify', 'MsixDryRun', 'ModelExperienceDryRun', 'ModelExperiencePatch', 'PatchDryRunKeepWork', 'FullRepatch', 'FullRepatchSkipFastVerify', 'TrustLatestPatchedMsixSignerLocalMachine', 'RemoveCodexAppxAllUsers', 'InstallLatestPatchedMsix')
+if ([string]::IsNullOrWhiteSpace($RemoteControlOutputRoot)) {
+  $RemoteControlOutputRoot = Join-Path $repoRoot 'artifacts\remote-control'
+}
+$validSteps = @('Status', 'RemoteControlStatus', 'RemoteControlAuthVerify', 'RemoteControlDryRun', 'RemoteControlNativeBuild', 'RemoteControlPatch', 'Backup', 'ComputerUseStrict', 'ComputerUseRepairVerify', 'MsixDryRun', 'ModelExperienceDryRun', 'ModelExperiencePatch', 'PatchDryRunKeepWork', 'FullRepatch', 'FullRepatchSkipFastVerify', 'TrustLatestPatchedMsixSignerLocalMachine', 'RemoveCodexAppxAllUsers', 'InstallLatestPatchedMsix')
 $Steps = @(
   foreach ($step in $Steps) {
     foreach ($part in ([string]$step -split ',')) {
@@ -29,6 +36,9 @@ foreach ($step in $Steps) {
   if ($validSteps -notcontains $step) {
     throw "invalid step '$step'; expected one of: $($validSteps -join ', ')"
   }
+}
+if ($Steps -contains 'RemoteControlNativeBuild' -and [string]::IsNullOrWhiteSpace($RemoteControlNativeWorkRoot)) {
+  throw 'RemoteControlNativeBuild requires -RemoteControlNativeWorkRoot'
 }
 $runRoot = Join-Path $OutputRoot $RunId
 $eventsPath = Join-Path $runRoot 'events.jsonl'
@@ -184,6 +194,173 @@ if ($pkg) {
 }
 '@
       $results += Invoke-TracedCommand -Name $step -FilePath 'powershell.exe' -Arguments @('-NoProfile', '-Command', $script)
+    }
+    'RemoteControlStatus' {
+      $script = @'
+$ErrorActionPreference = 'Stop'
+
+function Get-FileSummary {
+  param([string]$Path)
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    return [ordered]@{ exists = $false }
+  }
+  $item = Get-Item -LiteralPath $Path
+  return [ordered]@{
+    exists = $true
+    length = $item.Length
+    lastWriteTimeUtc = $item.LastWriteTimeUtc.ToString('o')
+  }
+}
+
+function Get-MarkerStatus {
+  param(
+    [string]$Path,
+    [string[]]$Markers
+  )
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    return [ordered]@{ exists = $false; present = @(); missing = $Markers }
+  }
+  $bytes = [System.IO.File]::ReadAllBytes($Path)
+  $text = [System.Text.Encoding]::GetEncoding(28591).GetString($bytes)
+  $present = @($Markers | Where-Object { $text.Contains($_) })
+  $missing = @($Markers | Where-Object { -not $text.Contains($_) })
+  return [ordered]@{ exists = $true; present = $present; missing = $missing }
+}
+
+$probeRoot = Join-Path $env:TEMP 'codex-remote-control-status'
+$pkg = Get-AppxPackage -Name OpenAI.Codex -ErrorAction Stop |
+  Sort-Object Version -Descending |
+  Select-Object -First 1
+$nativePath = Join-Path $pkg.InstallLocation 'app\resources\codex.exe'
+$asarPath = Join-Path $pkg.InstallLocation 'app\resources\app.asar'
+$probePath = Join-Path $probeRoot 'installed-resource-codex-version-probe.exe'
+New-Item -ItemType Directory -Force -Path $probeRoot | Out-Null
+Copy-Item -LiteralPath $nativePath -Destination $probePath -Force
+try {
+  $nativeVersion = (& $probePath --version 2>&1 | Out-String).Trim()
+} finally {
+  Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue
+}
+
+$nativeMarkers = @(
+  'remote_control_app_server_isolated_oauth_used',
+  'remote_control_native_remote_json_first',
+  'remote_control_websocket_proxy_attempt',
+  'remote_control_websocket_proxy_connected',
+  'remote-control-oauth.json',
+  'remote.json',
+  'codex.remote_control.enroll'
+)
+$asarMarkers = @(
+  'remote_control_desktop_fetch_override_used',
+  'remote_control_auth_token_expired_skipped',
+  'remote_control_appserver_bh_isolated_auth_fallback',
+  'remote_control_connection_auth_fallback_used',
+  'remote_control_mobile_setup_no_auth_redirect',
+  'remote_control_mobile_setup_authorize_before_enable',
+  'remote_control_mfa_info_403_nonblocking',
+  'remote_control_client_list_partial_failure_nonblocking',
+  'remote_control_settings_force_control_this_pc_visible',
+  'remote_control_settings_force_remote_control_section_visible'
+)
+$codexHome = Join-Path $env:USERPROFILE '.codex'
+$authPath = Join-Path $codexHome 'auth.json'
+$authSummary = [ordered]@{ exists = $false; hasApiKey = $false; hasOAuthTokens = $false; parseError = $null }
+if (Test-Path -LiteralPath $authPath -PathType Leaf) {
+  $authSummary.exists = $true
+  try {
+    $auth = Get-Content -Raw -LiteralPath $authPath | ConvertFrom-Json
+    $propertyNames = @($auth.PSObject.Properties.Name)
+    $authSummary.hasApiKey = [bool](@($propertyNames | Where-Object { $_ -match '(?i)api.?key' }).Count)
+    $authSummary.hasOAuthTokens = [bool](@($propertyNames | Where-Object { $_ -match '(?i)token|oauth' }).Count)
+  } catch {
+    $authSummary.parseError = $_.Exception.Message
+  }
+}
+$configPath = Join-Path $codexHome 'config.toml'
+$modelProvider = $null
+if (Test-Path -LiteralPath $configPath -PathType Leaf) {
+  $configText = Get-Content -Raw -LiteralPath $configPath
+  $providerMatch = [regex]::Match($configText, '(?m)^\s*model_provider\s*=\s*["'']([^"'']+)["'']')
+  if ($providerMatch.Success) {
+    $modelProvider = $providerMatch.Groups[1].Value
+  }
+}
+
+[pscustomobject]@{
+  package = [ordered]@{
+    fullName = $pkg.PackageFullName
+    version = [string]$pkg.Version
+    signatureKind = [string]$pkg.SignatureKind
+    installLocation = $pkg.InstallLocation
+  }
+  nativeVersion = $nativeVersion
+  nativeMarkers = Get-MarkerStatus -Path $nativePath -Markers $nativeMarkers
+  asarMarkers = Get-MarkerStatus -Path $asarPath -Markers $asarMarkers
+  auth = $authSummary
+  modelProvider = $modelProvider
+  remoteJson = Get-FileSummary -Path (Join-Path $codexHome 'remote.json')
+  remoteControlOauth = Get-FileSummary -Path (Join-Path $codexHome 'remote-control-oauth.json')
+  remoteControlFlowLog = Get-FileSummary -Path (Join-Path $codexHome 'remote-control-flow.log')
+} | ConvertTo-Json -Depth 8
+'@
+      $results += Invoke-TracedCommand -Name $step -FilePath 'powershell.exe' -Arguments @('-NoProfile', '-Command', $script)
+    }
+    'RemoteControlAuthVerify' {
+      $results += Invoke-TracedCommand -Name $step -FilePath 'uv.exe' -TimeoutSeconds $DefaultTimeoutSeconds -Arguments @(
+        'run',
+        '--no-project',
+        'python',
+        (Join-Path $PSScriptRoot 'refresh-remote-control-auth.py'),
+        '--verify-only'
+      )
+    }
+    'RemoteControlDryRun' {
+      $remoteArgs = @(
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        (Join-Path $PSScriptRoot 'patch-remote-control-windows-msix.ps1'),
+        '-DryRun',
+        '-ForceRebuild',
+        '-OutputRoot',
+        $RemoteControlOutputRoot
+      )
+      if (-not [string]::IsNullOrWhiteSpace($ReplacementResourceCodexExe)) {
+        $remoteArgs += @('-ReplacementResourceCodexExe', $ReplacementResourceCodexExe)
+      }
+      $results += Invoke-TracedCommand -Name $step -FilePath 'powershell.exe' -TimeoutSeconds $RemoteControlTimeoutSeconds -Arguments $remoteArgs
+    }
+    'RemoteControlNativeBuild' {
+      $results += Invoke-TracedCommand -Name $step -FilePath 'powershell.exe' -TimeoutSeconds $RemoteControlTimeoutSeconds -Arguments @(
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        (Join-Path $PSScriptRoot 'build-remote-control-native-replacement.ps1'),
+        '-WorkRoot',
+        $RemoteControlNativeWorkRoot
+      )
+    }
+    'RemoteControlPatch' {
+      $remoteArgs = @(
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        (Join-Path $PSScriptRoot 'patch-remote-control-windows-msix.ps1'),
+        '-Install',
+        '-Launch',
+        '-InstallPrerequisites',
+        '-ForceRebuild',
+        '-OutputRoot',
+        $RemoteControlOutputRoot
+      )
+      if (-not [string]::IsNullOrWhiteSpace($ReplacementResourceCodexExe)) {
+        $remoteArgs += @('-ReplacementResourceCodexExe', $ReplacementResourceCodexExe)
+      }
+      $results += Invoke-TracedCommand -Name $step -FilePath 'powershell.exe' -TimeoutSeconds $RemoteControlTimeoutSeconds -Arguments $remoteArgs
     }
     'Backup' {
       $results += Invoke-TracedCommand -Name $step -FilePath 'powershell.exe' -Arguments @(
