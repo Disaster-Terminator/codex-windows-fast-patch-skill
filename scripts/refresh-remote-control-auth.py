@@ -21,7 +21,8 @@ import webbrowser
 ISSUER = "https://auth.openai.com"
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 SCOPE = "openid profile email offline_access api.connectors.read api.connectors.invoke"
-DEFAULT_PROXY = "http://127.0.0.1:10808"
+AUTO_PROXY = "auto"
+LOCAL_PROXY = "http://127.0.0.1:10808"
 CLIENTS_ENDPOINT = "https://chatgpt.com/backend-api/wham/remote/control/clients"
 
 
@@ -69,6 +70,32 @@ def make_opener(proxy: str | None) -> urllib.request.OpenerDirector:
     return urllib.request.build_opener(
         urllib.request.ProxyHandler({"http": proxy, "https": proxy})
     )
+
+
+def proxy_is_listening(proxy: str, timeout_seconds: float = 0.25) -> bool:
+    try:
+        parsed = urllib.parse.urlparse(proxy)
+        if not parsed.hostname:
+            return False
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        with socket.create_connection(
+            (parsed.hostname, port), timeout=timeout_seconds
+        ):
+            return True
+    except (OSError, ValueError):
+        return False
+
+
+def resolve_proxy(value: str) -> str | None:
+    if not value:
+        return None
+    if value != AUTO_PROXY:
+        return value
+    for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        candidate = os.environ.get(name)
+        if candidate:
+            return candidate
+    return LOCAL_PROXY if proxy_is_listening(LOCAL_PROXY) else None
 
 
 def summarize_http_error(exc: urllib.error.HTTPError) -> dict:
@@ -380,8 +407,11 @@ def main() -> int:
     parser.add_argument("--verify-only", action="store_true", help="Only test .codex/remote.json.")
     parser.add_argument(
         "--proxy",
-        default=DEFAULT_PROXY,
-        help='Proxy for auth/token and verify requests. Use --proxy "" to disable.',
+        default=AUTO_PROXY,
+        help=(
+            "Proxy for auth/token and verify requests. Defaults to HTTPS_PROXY/HTTP_PROXY, "
+            "then a listening 127.0.0.1:10808, otherwise direct. Use --proxy empty to force direct."
+        ),
     )
     parser.add_argument("--timeout-seconds", type=int, default=600)
     parser.add_argument("--no-open", action="store_true", help="Print the auth URL without opening it.")
@@ -392,7 +422,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    proxy = args.proxy if args.proxy else None
+    proxy = resolve_proxy(args.proxy)
     remote_path = codex_home / "remote.json"
     if args.verify_only:
         result = verify_remote(remote_path, proxy, min(args.timeout_seconds, 120))
